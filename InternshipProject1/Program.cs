@@ -61,6 +61,7 @@ try
     }
 
     app.Run();
+    //something
 }
 catch (Exception ex)
 {
