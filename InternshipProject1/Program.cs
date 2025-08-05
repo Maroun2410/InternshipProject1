@@ -59,7 +59,7 @@ try
         dbContext.Database.Migrate();
         DbInitializer.Seed(dbContext);
     }
-
+    app.UseDeveloperExceptionPage();
     app.Run();
     //something
 }
