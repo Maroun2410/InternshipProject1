@@ -16,5 +16,7 @@ namespace InternshipProject1.Data
         public DbSet<Harvest> Harvests { get; set; }
         public DbSet<Inventory> Inventories { get; set; }
         public DbSet<Sale> Sales { get; set; }
+
+        public DbSet<Owner> Owners { get; set; }
     }
 }

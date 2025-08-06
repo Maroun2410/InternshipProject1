@@ -13,6 +13,24 @@ namespace InternshipProject1.Migrations
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.CreateTable(
+                name: "Owners",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uuid", nullable: false),
+                    Name = table.Column<string>(type: "text", nullable: false),
+                    Email = table.Column<string>(type: "text", nullable: false),
+                    PhoneNumber = table.Column<string>(type: "text", nullable: false),
+                    Address = table.Column<string>(type: "text", nullable: false),
+                    NationalId = table.Column<string>(type: "text", nullable: false),
+                    Age = table.Column<int>(type: "integer", nullable: false),
+                    Type = table.Column<int>(type: "integer", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_Owners", x => x.Id);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "TreeSpecies",
                 columns: table => new
                 {
@@ -38,11 +56,18 @@ namespace InternshipProject1.Migrations
                     Location = table.Column<string>(type: "text", nullable: false),
                     TreeSpeciesId = table.Column<int>(type: "integer", nullable: false),
                     TotalTrees = table.Column<int>(type: "integer", nullable: false),
-                    PlantingDate = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+                    PlantingDate = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
+                    OwnerId = table.Column<Guid>(type: "uuid", nullable: false)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_Lands", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_Lands_Owners_OwnerId",
+                        column: x => x.OwnerId,
+                        principalTable: "Owners",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
                     table.ForeignKey(
                         name: "FK_Lands_TreeSpecies_TreeSpeciesId",
                         column: x => x.TreeSpeciesId,
@@ -161,6 +186,11 @@ namespace InternshipProject1.Migrations
                 column: "LandId");
 
             migrationBuilder.CreateIndex(
+                name: "IX_Lands_OwnerId",
+                table: "Lands",
+                column: "OwnerId");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_Lands_TreeSpeciesId",
                 table: "Lands",
                 column: "TreeSpeciesId");
@@ -188,6 +218,9 @@ namespace InternshipProject1.Migrations
 
             migrationBuilder.DropTable(
                 name: "Lands");
+
+            migrationBuilder.DropTable(
+                name: "Owners");
 
             migrationBuilder.DropTable(
                 name: "TreeSpecies");

@@ -1,4 +1,7 @@
-﻿namespace InternshipProject1.Models
+﻿using System.ComponentModel.DataAnnotations.Schema;
+using InternshipProject1.Models;
+
+namespace InternshipProject1.Models
 {
     public class Land
     {
@@ -13,5 +16,7 @@
         public TreeSpecies TreeSpecies { get; set; }
         public ICollection<LandPractices> LandPractices { get; set; }
         public ICollection<Harvest> Harvests { get; set; }
+        public Guid OwnerId { get; set; }
+        public Owner Owner { get; set; }
     }
 }

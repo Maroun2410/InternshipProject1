@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace InternshipProject1.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    [Migration("20250805121426_InitialCreate")]
+    [Migration("20250806131007_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -108,6 +108,9 @@ namespace InternshipProject1.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<Guid>("OwnerId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTime>("PlantingDate")
                         .HasColumnType("timestamp with time zone");
 
@@ -118,6 +121,8 @@ namespace InternshipProject1.Migrations
                         .HasColumnType("integer");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("OwnerId");
 
                     b.HasIndex("TreeSpeciesId");
 
@@ -159,6 +164,43 @@ namespace InternshipProject1.Migrations
                     b.HasIndex("LandId");
 
                     b.ToTable("LandPractices");
+                });
+
+            modelBuilder.Entity("InternshipProject1.Models.Owner", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Address")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("Age")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("NationalId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PhoneNumber")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("Type")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Owners");
                 });
 
             modelBuilder.Entity("InternshipProject1.Models.Sale", b =>
@@ -245,11 +287,19 @@ namespace InternshipProject1.Migrations
 
             modelBuilder.Entity("InternshipProject1.Models.Land", b =>
                 {
+                    b.HasOne("InternshipProject1.Models.Owner", "Owner")
+                        .WithMany("Lands")
+                        .HasForeignKey("OwnerId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
                     b.HasOne("InternshipProject1.Models.TreeSpecies", "TreeSpecies")
                         .WithMany("Lands")
                         .HasForeignKey("TreeSpeciesId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("Owner");
 
                     b.Navigation("TreeSpecies");
                 });
@@ -291,6 +341,11 @@ namespace InternshipProject1.Migrations
                     b.Navigation("Harvests");
 
                     b.Navigation("LandPractices");
+                });
+
+            modelBuilder.Entity("InternshipProject1.Models.Owner", b =>
+                {
+                    b.Navigation("Lands");
                 });
 
             modelBuilder.Entity("InternshipProject1.Models.TreeSpecies", b =>
