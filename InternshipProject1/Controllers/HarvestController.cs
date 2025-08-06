@@ -1,6 +1,7 @@
 ﻿using InternshipProject1.Data;
 using InternshipProject1.DTOs;
 using InternshipProject1.Models;
+using InternshipProject1.Mappers;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -27,14 +28,23 @@ namespace InternshipProject1.Controllers
 
         // GET: api/Harvest/{id}
         [HttpGet("{id}")]
-        public async Task<IActionResult> GetHarvest(int id)
+        public async Task<ActionResult<HarvestDTO>> GetHarvest(int id)
         {
-            var harvest = await _context.Harvests.FindAsync(id);
-            if (harvest == null)
-                return NotFound();
+            var harvest = await _context.Harvests
+                                .Include(h => h.Inventories)
+                                .FirstOrDefaultAsync(h => h.Id == id);
 
-            return Ok(harvest);
+            if (harvest == null)
+            {
+                return NotFound();
+            }
+
+            var harvestDto = HarvestMapper.MapHarvestToDTO(harvest);
+
+            return Ok(harvestDto);
         }
+
+
 
         // POST: api/Harvest
         [HttpPost]

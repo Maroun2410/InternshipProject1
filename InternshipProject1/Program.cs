@@ -67,3 +67,4 @@ catch (Exception ex)
 {
     Console.WriteLine($"Application failed to start: {ex.Message}");
 }
+

@@ -1,4 +1,7 @@
-﻿namespace InternshipProject1.DTOs
+﻿using InternshipProject1.DTOs;  
+
+
+namespace InternshipProject1.DTOs
 {
     public class HarvestDTO
     {
@@ -7,5 +10,6 @@
         public decimal Quantity { get; set; }
         public string UnitQuantity { get; set; }
         public string Notes { get; set; }
+        public List<InventoryDto> Inventories { get; set; }
     }
 }

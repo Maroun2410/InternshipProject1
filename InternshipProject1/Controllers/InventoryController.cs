@@ -19,17 +19,41 @@ namespace InternshipProject1.Controllers
 
         // GET: api/Inventory
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<Inventory>>> GetInventories()
+        public async Task<ActionResult<IEnumerable<InventoryResponseDto>>> GetInventories()
         {
-            return await _context.Inventories.Include(i => i.Harvest).ToListAsync();
+            var inventories = await _context.Inventories
+                .Include(i => i.Harvest)
+                .Select(i => new InventoryResponseDto
+                {
+                    Id = i.Id,
+                    StoredDate = i.StoredDate,
+                    Quantity = i.Quantity,
+                    UnitQuantity = i.UnitQuantity,
+                    Status = i.Status,
+                    HarvestId = i.HarvestId
+                })
+                .ToListAsync();
+
+            return inventories;
         }
 
         // GET: api/Inventory/5
         [HttpGet("{id}")]
-        public async Task<ActionResult<Inventory>> GetInventory(int id)
+        public async Task<ActionResult<InventoryResponseDto>> GetInventory(int id)
         {
-            var inventory = await _context.Inventories.Include(i => i.Harvest)
-                                                      .FirstOrDefaultAsync(i => i.Id == id);
+            var inventory = await _context.Inventories
+                .Include(i => i.Harvest)
+                .Where(i => i.Id == id)
+                .Select(i => new InventoryResponseDto
+                {
+                    Id = i.Id,
+                    StoredDate = i.StoredDate,
+                    Quantity = i.Quantity,
+                    UnitQuantity = i.UnitQuantity,
+                    Status = i.Status,
+                    HarvestId = i.HarvestId
+                })
+                .FirstOrDefaultAsync();
 
             if (inventory == null)
                 return NotFound();
@@ -58,7 +82,17 @@ namespace InternshipProject1.Controllers
             _context.Inventories.Add(inventory);
             await _context.SaveChangesAsync();
 
-            return CreatedAtAction(nameof(GetInventory), new { id = inventory.Id }, inventory);
+            var responseDto = new InventoryResponseDto
+            {
+                Id = inventory.Id,
+                StoredDate = inventory.StoredDate,
+                Quantity = inventory.Quantity,
+                UnitQuantity = inventory.UnitQuantity,
+                Status = inventory.Status,
+                HarvestId = inventory.HarvestId
+            };
+
+            return CreatedAtAction(nameof(GetInventory), new { id = inventory.Id }, responseDto);
         }
 
         // PUT: api/Inventory/5
@@ -101,7 +135,6 @@ namespace InternshipProject1.Controllers
 
             return NoContent();
         }
-
 
         // DELETE: api/Inventory/5
         [HttpDelete("{id}")]
