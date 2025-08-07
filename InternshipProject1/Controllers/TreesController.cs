@@ -57,7 +57,7 @@ namespace InternshipProject1.Controllers
 
         // POST: api/Trees
         [HttpPost]
-        public async Task<ActionResult<TreeDto>> PostTree(TreeDto treeDto)
+        public async Task<ActionResult<TreeDto>> PostTree(TreeCreateDto treeDto)
         {
             var tree = new TreeSpecies
             {
@@ -69,10 +69,17 @@ namespace InternshipProject1.Controllers
             _context.TreeSpecies.Add(tree);
             await _context.SaveChangesAsync();
 
-            treeDto.Id = tree.Id; // Update ID after insertion
+            var resultDto = new TreeDto
+            {
+                Id = tree.Id,
+                Name = tree.Name,
+                Description = tree.Description,
+                HarvestMonth = tree.HarvestMonth
+            };
 
-            return CreatedAtAction(nameof(GetTree), new { id = tree.Id }, treeDto);
+            return CreatedAtAction(nameof(GetTree), new { id = tree.Id }, resultDto);
         }
+
 
         // PUT: api/Trees/5
         [HttpPut("{id}")]

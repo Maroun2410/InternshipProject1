@@ -62,25 +62,35 @@ namespace InternshipProject1.Controllers
 
         // POST: api/Sales
         [HttpPost]
-        public async Task<ActionResult<SaleDto>> CreateSale(SaleDto dto)
+        public async Task<ActionResult<SaleDto>> PostSale(SaleCreateDto saleDto)
         {
             var sale = new Sale
             {
-                InventoryId = dto.InventoryId,
-                Date = dto.Date,
-                Quantity = dto.Quantity,
-                UnitQuantity = dto.UnitQuantity,
-                UnitPrice = dto.UnitPrice,
-                BuyerName = dto.BuyerName
+                InventoryId = saleDto.InventoryId,
+                Date = saleDto.Date,
+                Quantity = saleDto.Quantity,
+                UnitQuantity = saleDto.UnitQuantity,
+                UnitPrice = saleDto.UnitPrice,
+                BuyerName = saleDto.BuyerName
             };
 
             _context.Sales.Add(sale);
             await _context.SaveChangesAsync();
 
-            dto.Id = sale.Id; // assign generated ID
+            var resultDto = new SaleDto
+            {
+                Id = sale.Id,
+                InventoryId = sale.InventoryId,
+                Date = sale.Date,
+                Quantity = sale.Quantity,
+                UnitQuantity = sale.UnitQuantity,
+                UnitPrice = sale.UnitPrice,
+                BuyerName = sale.BuyerName
+            };
 
-            return CreatedAtAction(nameof(GetSale), new { id = dto.Id }, dto);
+            return CreatedAtAction(nameof(GetSale), new { id = sale.Id }, resultDto);
         }
+
 
         // PUT: api/Sales/5
         [HttpPut("{id}")]

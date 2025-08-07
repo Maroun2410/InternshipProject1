@@ -59,25 +59,35 @@ namespace InternshipProject1.Controllers
         }
 
         [HttpPost]
-        public async Task<ActionResult<LandDto>> CreateLand(LandDto dto)
+        public async Task<ActionResult<LandDto>> PostLand(LandCreateDto landDto)
         {
             var land = new Land
             {
-                Name = dto.Name,
-                AreaInHectares = dto.AreaInHectares,
-                Location = dto.Location,
-                TreeSpeciesId = dto.TreeSpeciesId,
-                TotalTrees = dto.TotalTrees,
-                PlantingDate = dto.PlantingDate
+                Name = landDto.Name,
+                AreaInHectares = landDto.AreaInHectares,
+                Location = landDto.Location,
+                TreeSpeciesId = landDto.TreeSpeciesId,
+                TotalTrees = landDto.TotalTrees,
+                PlantingDate = landDto.PlantingDate
             };
 
             _context.Lands.Add(land);
             await _context.SaveChangesAsync();
 
-            dto.Id = land.Id; // set the ID after saving
+            var resultDto = new LandDto
+            {
+                Id = land.Id,
+                Name = land.Name,
+                AreaInHectares = land.AreaInHectares,
+                Location = land.Location,
+                TreeSpeciesId = land.TreeSpeciesId,
+                TotalTrees = land.TotalTrees,
+                PlantingDate = land.PlantingDate
+            };
 
-            return CreatedAtAction(nameof(GetLand), new { id = dto.Id }, dto);
+            return CreatedAtAction(nameof(GetLand), new { id = land.Id }, resultDto);
         }
+
 
         [HttpPut("{id}")]
         public async Task<IActionResult> UpdateLand(int id, LandDto dto)
