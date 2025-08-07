@@ -31,7 +31,8 @@ namespace InternshipProject1.Controllers
                 Location = l.Location,
                 TreeSpeciesId = l.TreeSpeciesId,
                 TotalTrees = l.TotalTrees,
-                PlantingDate = l.PlantingDate
+                PlantingDate = l.PlantingDate,
+                OwnerId = l.OwnerId
             });
 
             return Ok(landDtos);
@@ -52,7 +53,8 @@ namespace InternshipProject1.Controllers
                 Location = land.Location,
                 TreeSpeciesId = land.TreeSpeciesId,
                 TotalTrees = land.TotalTrees,
-                PlantingDate = land.PlantingDate
+                PlantingDate = land.PlantingDate,
+                OwnerId = land.OwnerId
             };
 
             return Ok(dto);
@@ -68,8 +70,10 @@ namespace InternshipProject1.Controllers
                 Location = landDto.Location,
                 TreeSpeciesId = landDto.TreeSpeciesId,
                 TotalTrees = landDto.TotalTrees,
-                PlantingDate = landDto.PlantingDate
+                PlantingDate = landDto.PlantingDate,
+                OwnerId = landDto.OwnerId 
             };
+
 
             _context.Lands.Add(land);
             await _context.SaveChangesAsync();
@@ -90,11 +94,8 @@ namespace InternshipProject1.Controllers
 
 
         [HttpPut("{id}")]
-        public async Task<IActionResult> UpdateLand(int id, LandDto dto)
+        public async Task<IActionResult> UpdateLand(int id, LandCreateDto dto)
         {
-            if (id != dto.Id)
-                return BadRequest("ID mismatch.");
-
             var existing = await _context.Lands.FindAsync(id);
             if (existing == null)
                 return NotFound();
@@ -110,6 +111,7 @@ namespace InternshipProject1.Controllers
 
             return NoContent();
         }
+
 
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteLand(int id)

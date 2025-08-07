@@ -1,7 +1,7 @@
 ﻿using InternshipProject1.Data;
 using InternshipProject1.DTOs;
-using InternshipProject1.Models;
 using InternshipProject1.Mappers;
+using InternshipProject1.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -22,37 +22,33 @@ namespace InternshipProject1.Controllers
         [HttpGet]
         public async Task<IActionResult> GetHarvests()
         {
+            // Returns a list of all harvests.
             var harvests = await _context.Harvests.ToListAsync();
             return Ok(harvests);
         }
 
         // GET: api/Harvest/{id}
         [HttpGet("{id}")]
-        public async Task<ActionResult<HarvestDTO>> GetHarvest(int id)
+        public async Task<ActionResult<Harvest>> GetHarvest(int id)
         {
-            var harvest = await _context.Harvests
-                                .Include(h => h.Inventories)
-                                .FirstOrDefaultAsync(h => h.Id == id);
+            // Finds a harvest by its ID.
+            // The Include for Inventories has been removed.
+            var harvest = await _context.Harvests.FirstOrDefaultAsync(h => h.Id == id);
 
             if (harvest == null)
             {
                 return NotFound();
             }
 
-            var harvestDto = HarvestMapper.MapHarvestToDTO(harvest);
-
-            return Ok(harvestDto);
+            // Returns the harvest object directly.
+            // The mapping to a DTO has been removed for simplicity.
+            return Ok(harvest);
         }
-
-
 
         // POST: api/Harvest
         [HttpPost]
-        public async Task<IActionResult> CreateHarvest([FromBody] HarvestDTO harvestDto)
+        public async Task<ActionResult<HarvestResponseDto>> PostHarvest(HarvestCreateDto harvestDto)
         {
-            if (!ModelState.IsValid)
-                return BadRequest(ModelState);
-
             var harvest = new Harvest
             {
                 LandId = harvestDto.LandId,
@@ -65,17 +61,33 @@ namespace InternshipProject1.Controllers
             _context.Harvests.Add(harvest);
             await _context.SaveChangesAsync();
 
-            return CreatedAtAction(nameof(GetHarvest), new { id = harvest.Id }, harvest);
+            var responseDto = new HarvestResponseDto
+            {
+                Id = harvest.Id,
+                LandId = harvest.LandId,
+                Date = harvest.Date,
+                Quantity = harvest.Quantity,
+                UnitQuantity = harvest.UnitQuantity,
+                Notes = harvest.Notes
+            };
+
+            return CreatedAtAction(nameof(GetHarvest), new { id = harvest.Id }, responseDto);
         }
+
+
+
 
         // PUT: api/Harvest/{id}
         [HttpPut("{id}")]
-        public async Task<IActionResult> UpdateHarvest(int id, [FromBody] HarvestDTO harvestDto)
+        public async Task<IActionResult> UpdateHarvest(int id, [FromBody] HarvestCreateDto harvestDto)
         {
             var harvest = await _context.Harvests.FindAsync(id);
             if (harvest == null)
+            {
                 return NotFound();
+            }
 
+            // Update harvest properties from the DTO.
             harvest.LandId = harvestDto.LandId;
             harvest.Date = harvestDto.Date;
             harvest.Quantity = harvestDto.Quantity;
@@ -92,7 +104,9 @@ namespace InternshipProject1.Controllers
         {
             var harvest = await _context.Harvests.FindAsync(id);
             if (harvest == null)
+            {
                 return NotFound();
+            }
 
             _context.Harvests.Remove(harvest);
             await _context.SaveChangesAsync();

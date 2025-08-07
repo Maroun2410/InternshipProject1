@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace InternshipProject1.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    [Migration("20250806131007_InitialCreate")]
+    [Migration("20250807094248_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -277,7 +277,7 @@ namespace InternshipProject1.Migrations
             modelBuilder.Entity("InternshipProject1.Models.Inventory", b =>
                 {
                     b.HasOne("InternshipProject1.Models.Harvest", "Harvest")
-                        .WithMany("Inventories")
+                        .WithMany()
                         .HasForeignKey("HarvestId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
@@ -324,11 +324,6 @@ namespace InternshipProject1.Migrations
                         .IsRequired();
 
                     b.Navigation("Inventory");
-                });
-
-            modelBuilder.Entity("InternshipProject1.Models.Harvest", b =>
-                {
-                    b.Navigation("Inventories");
                 });
 
             modelBuilder.Entity("InternshipProject1.Models.Inventory", b =>

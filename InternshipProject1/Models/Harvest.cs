@@ -10,7 +10,6 @@
         public string Notes { get; set; }
 
         public Land Lands { get; set; }
-        public ICollection<Inventory> Inventories { get; set; }
     }
 }
 //test1test2test3

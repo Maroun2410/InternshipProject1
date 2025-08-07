@@ -94,26 +94,24 @@ namespace InternshipProject1.Controllers
 
         // PUT: api/Sales/5
         [HttpPut("{id}")]
-        public async Task<IActionResult> UpdateSale(int id, SaleDto dto)
+        public async Task<IActionResult> UpdateSale(int id, SaleCreateDto dto)
         {
-            if (id != dto.Id)
-                return BadRequest("ID mismatch.");
-
-            var sale = await _context.Sales.FindAsync(id);
-            if (sale == null)
+            var existing = await _context.Sales.FindAsync(id);
+            if (existing == null)
                 return NotFound();
 
-            sale.InventoryId = dto.InventoryId;
-            sale.Date = dto.Date;
-            sale.Quantity = dto.Quantity;
-            sale.UnitQuantity = dto.UnitQuantity;
-            sale.UnitPrice = dto.UnitPrice;
-            sale.BuyerName = dto.BuyerName;
+            existing.InventoryId = dto.InventoryId;
+            existing.Date = dto.Date;
+            existing.Quantity = dto.Quantity;
+            existing.UnitQuantity = dto.UnitQuantity;
+            existing.UnitPrice = dto.UnitPrice;
+            existing.BuyerName = dto.BuyerName;
 
             await _context.SaveChangesAsync();
 
             return NoContent();
         }
+
 
         // DELETE: api/Sales/5
         [HttpDelete("{id}")]

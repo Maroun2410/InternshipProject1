@@ -9,6 +9,6 @@
         public int TreeSpeciesId { get; set; }
         public int TotalTrees { get; set; }
         public DateTime PlantingDate { get; set; }
+        public Guid OwnerId { get; set; }
     }
 }
-

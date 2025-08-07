@@ -1,13 +1,14 @@
-﻿// Dtos/LandCreateDto.cs
-namespace InternshipProject1.Dtos
+﻿namespace InternshipProject1.Dtos
 {
     public class LandCreateDto
     {
-        public string Name { get; set; } = string.Empty;
+        public string Name { get; set; }
         public double AreaInHectares { get; set; }
-        public string Location { get; set; } = string.Empty;
+        public string Location { get; set; }
         public int TreeSpeciesId { get; set; }
         public int TotalTrees { get; set; }
         public DateTime PlantingDate { get; set; }
+
+        public Guid OwnerId { get; set; } // <-- Add this line
     }
 }

@@ -5,23 +5,18 @@ namespace InternshipProject1.Mappers
 {
     public static class HarvestMapper
     {
-        public static HarvestDTO MapHarvestToDTO(Harvest harvest)
+        public static HarvestResponseDto MapHarvestToResponseDto(Harvest harvest)
         {
-            return new HarvestDTO
+            // This method now maps a Harvest object to a HarvestResponseDto
+            // without including any inventory information.
+            return new HarvestResponseDto
             {
+                Id = harvest.Id,
                 LandId = harvest.LandId,
                 Date = harvest.Date,
                 Quantity = harvest.Quantity,
                 UnitQuantity = harvest.UnitQuantity,
                 Notes = harvest.Notes,
-                Inventories = harvest.Inventories.Select(inventory => new InventoryDto
-                {
-                    StoredDate = inventory.StoredDate,
-                    Quantity = inventory.Quantity,
-                    UnitQuantity = inventory.UnitQuantity,
-                    Status = inventory.Status,
-                    HarvestId = inventory.HarvestId
-                }).ToList()
             };
         }
     }

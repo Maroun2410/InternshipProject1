@@ -83,24 +83,21 @@ namespace InternshipProject1.Controllers
 
         // PUT: api/Trees/5
         [HttpPut("{id}")]
-        public async Task<IActionResult> PutTree(int id, TreeDto treeDto)
+        public async Task<IActionResult> UpdateTreeSpecies(int id, TreeCreateDto dto)
         {
-            if (id != treeDto.Id)
-                return BadRequest();
-
-            var tree = await _context.TreeSpecies.FindAsync(id);
-
-            if (tree == null)
+            var existing = await _context.TreeSpecies.FindAsync(id);
+            if (existing == null)
                 return NotFound();
 
-            tree.Name = treeDto.Name;
-            tree.Description = treeDto.Description;
-            tree.HarvestMonth = treeDto.HarvestMonth;
+            existing.Name = dto.Name;
+            existing.Description = dto.Description;
+            existing.HarvestMonth = dto.HarvestMonth;
 
             await _context.SaveChangesAsync();
 
             return NoContent();
         }
+
 
         // DELETE: api/Trees/5
         [HttpDelete("{id}")]
