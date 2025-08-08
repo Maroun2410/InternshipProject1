@@ -21,7 +21,8 @@ namespace InternshipProject1.Models
         [Required]
         public string Name { get; set; }
 
-        [Required, EmailAddress]
+        [Required(ErrorMessage = "Email is required.")]
+        [EmailAddress(ErrorMessage = "Invalid email format.")]
         public string Email { get; set; }
 
         [Required]
@@ -34,6 +35,7 @@ namespace InternshipProject1.Models
         public string NationalId { get; set; }
 
         [Required]
+        [Range(10, 100, ErrorMessage = "Age must be between 10 and 100.")]
         public int Age { get; set; }
 
         [Required]
