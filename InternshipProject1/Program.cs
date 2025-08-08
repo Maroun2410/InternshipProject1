@@ -1,8 +1,11 @@
 using InternshipProject1.Data;
-using Microsoft.EntityFrameworkCore;
-using OrchardApp.Data.Seed;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
+using OrchardApp.Data.Seed;
+using InternshipProject1.Filters;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -10,7 +13,11 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-builder.Services.AddControllers();
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<InternshipProject1.Filters.ApiResponseWrapperFilter>();
+});
+
 
 // Swagger with Basic Metadata
 builder.Services.AddSwaggerGen(c =>
@@ -21,45 +28,59 @@ builder.Services.AddSwaggerGen(c =>
 // Add Health Checks
 builder.Services.AddHealthChecks();
 
+builder.Services.Configure<ApiBehaviorOptions>(options =>
+{
+    options.InvalidModelStateResponseFactory = context =>
+    {
+        var errors = context.ModelState
+            .Where(e => e.Value.Errors.Count > 0)
+            .Select(e => new
+            {
+                Field = e.Key,
+                Errors = e.Value.Errors.Select(x => x.ErrorMessage)
+            });
+
+        var result = new
+        {
+            StatusCode = 400,
+            Message = "Validation failed.",
+            Errors = errors
+        };
+
+        return new BadRequestObjectResult(result);
+    };
+});
+
 // ---------------------- Build App ---------------------- //
 var app = builder.Build();
 
 try
 {
-    // Global Exception Handling
-    app.UseExceptionHandler(errorApp =>
-    {
-        errorApp.Run(async context =>
-        {
-            context.Response.StatusCode = 500;
-            context.Response.ContentType = "application/json";
-            await context.Response.WriteAsync("{\"error\":\"An unexpected error occurred.\"}");
-        });
-    });
+    // Custom global error handler
+    app.UseMiddleware<InternshipProject1.Middleware.ErrorHandlingMiddleware>();
 
-    // Enable Swagger UI
+    // Enable Swagger
     app.UseSwagger();
     app.UseSwaggerUI(c =>
     {
         c.SwaggerEndpoint("/swagger/v1/swagger.json", "Internship API v1");
-        c.RoutePrefix = string.Empty;  // Swagger at root URL
+        c.RoutePrefix = string.Empty;
     });
 
     app.UseHttpsRedirection();
     app.UseAuthorization();
-    app.MapControllers();
 
-    // Health Check Endpoint
+    app.MapControllers();
     app.MapHealthChecks("/health");
 
-    // Apply Migrations & Seed Data
+    // Migrate & Seed Database
     using (var scope = app.Services.CreateScope())
     {
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         dbContext.Database.Migrate();
         DbInitializer.Seed(dbContext);
     }
-    app.UseDeveloperExceptionPage();
+
     app.Run();
     //something
 }

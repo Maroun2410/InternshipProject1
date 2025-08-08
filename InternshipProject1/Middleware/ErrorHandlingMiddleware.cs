@@ -1,0 +1,160 @@
+﻿using System.Net;
+using System.Text.Json;
+using Microsoft.AspNetCore.Http;
+
+namespace InternshipProject1.Middleware
+{
+    public class ErrorHandlingMiddleware
+    {
+        private readonly RequestDelegate _next;
+
+        public ErrorHandlingMiddleware(RequestDelegate next)
+        {
+            _next = next;
+        }
+
+        public async Task InvokeAsync(HttpContext context)
+        {
+            // Exclude Swagger and static files from wrapping
+            if (context.Request.Path.StartsWithSegments("/swagger") ||
+                context.Request.Path.StartsWithSegments("/favicon") ||
+                context.Request.Path.StartsWithSegments("/swagger-ui") ||
+                context.Request.Path.StartsWithSegments("/index.html"))
+            {
+                await _next(context);
+                return;
+            }
+
+            try
+            {
+                var originalBodyStream = context.Response.Body;
+
+                using var memoryStream = new MemoryStream();
+                context.Response.Body = memoryStream;
+
+                await _next(context); // let the request proceed
+
+                // Normalize status code category
+                int actualStatusCode = context.Response.StatusCode;
+                int normalizedStatusCode = NormalizeStatusCode(actualStatusCode);
+
+                context.Response.Body = originalBodyStream;
+                context.Response.ContentType = "application/json";
+                context.Response.StatusCode = normalizedStatusCode;
+
+                string jsonResponse;
+
+                if (actualStatusCode == 204)
+                {
+                    jsonResponse = JsonSerializer.Serialize(new
+                    {
+                        StatusCode = 200,
+                        Message = "No content"
+                    });
+                }
+                else if (actualStatusCode >= 200 && actualStatusCode < 300)
+                {
+                    // Copy the successful content if any, then wrap
+                    memoryStream.Seek(0, SeekOrigin.Begin);
+                    memoryStream.Seek(0, SeekOrigin.Begin);
+                    var originalContent = await new StreamReader(memoryStream).ReadToEndAsync();
+
+                    jsonResponse = JsonSerializer.Serialize(new
+                    {
+                        StatusCode = 200,
+                        Message = "Success",
+                        Data = TryDeserialize(originalContent)
+                    });
+
+                }
+                else if (actualStatusCode >= 400 && actualStatusCode < 500)
+                {
+                    jsonResponse = JsonSerializer.Serialize(new
+                    {
+                        StatusCode = 400,
+                        Message = GetErrorMessage(actualStatusCode)
+                    });
+                }
+                else if (actualStatusCode >= 500)
+                {
+                    jsonResponse = JsonSerializer.Serialize(new
+                    {
+                        StatusCode = 500,
+                        Message = "Server error occurred"
+                    });
+                }
+                else
+                {
+                    jsonResponse = JsonSerializer.Serialize(new
+                    {
+                        StatusCode = actualStatusCode,
+                        Message = "Unhandled status"
+                    });
+                }
+
+                await context.Response.WriteAsync(jsonResponse);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ErrorHandlingMiddleware] Unhandled Exception: {ex.Message}");
+
+                context.Response.StatusCode = 500;
+                context.Response.ContentType = "application/json";
+
+                var errorResponse = new
+                {
+                    StatusCode = 500,
+                    Message = "An unexpected server error occurred."
+                };
+
+                await context.Response.WriteAsync(JsonSerializer.Serialize(errorResponse));
+            }
+
+        }
+
+        private int NormalizeStatusCode(int statusCode)
+        {
+            if (statusCode >= 200 && statusCode < 300)
+                return 200;
+
+            if (statusCode >= 400 && statusCode < 500)
+                return 400;
+
+            if (statusCode >= 500)
+                return 500;
+
+            return statusCode;
+        }
+
+        private string GetErrorMessage(int statusCode)
+        {
+            return statusCode switch
+            {
+                400 => "Bad request.",
+                401 => "Unauthorized access.",
+                403 => "Forbidden access.",
+                404 => "Resource not found.",
+                405 => "Method not allowed.",
+                409 => "Conflict occurred.",
+                422 => "Unprocessable entity.",
+                _ => "Client error occurred."
+            };
+        }
+
+        private object TryDeserialize(string json)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(json))
+                    return null;
+
+                return JsonSerializer.Deserialize<object>(json);
+            }
+            catch
+            {
+                return json; // If it's not valid JSON, just return the raw string
+            }
+        }
+
+    }
+}
