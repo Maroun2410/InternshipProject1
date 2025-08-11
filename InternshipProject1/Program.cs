@@ -5,9 +5,31 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 using OrchardApp.Data.Seed;
 using InternshipProject1.Filters;
-
+using System.Globalization;
+using Microsoft.AspNetCore.Localization;
+using Microsoft.Extensions.Localization;
+using Microsoft.Extensions.Options;
+using InternshipProject1;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ---------------------- Localization ---------------------- //
+builder.Services.AddLocalization(options => options.ResourcesPath = "Resources");
+
+var supportedCultures = new[]
+{
+    new CultureInfo("en"),
+    new CultureInfo("fr"),
+    new CultureInfo("ar")
+};
+
+builder.Services.Configure<RequestLocalizationOptions>(options =>
+{
+    options.DefaultRequestCulture = new RequestCulture("en");
+    options.SupportedCultures = supportedCultures;
+    options.SupportedUICultures = supportedCultures;
+    options.RequestCultureProviders.Insert(0, new QueryStringRequestCultureProvider()); // allows ?culture=fr
+});
 
 // ---------------------- Services ---------------------- //
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
@@ -16,22 +38,26 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<InternshipProject1.Filters.ApiResponseWrapperFilter>();
-});
+})
+.AddDataAnnotationsLocalization()
+.AddViewLocalization();
 
-
-// Swagger with Basic Metadata
+// Swagger
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "Internship API", Version = "v1" });
 });
 
-// Add Health Checks
+// Health Checks
 builder.Services.AddHealthChecks();
 
+// Custom validation response (localized)
 builder.Services.Configure<ApiBehaviorOptions>(options =>
 {
     options.InvalidModelStateResponseFactory = context =>
     {
+        var localizer = context.HttpContext.RequestServices.GetRequiredService<IStringLocalizer<SharedResource>>();
+
         var errors = context.ModelState
             .Where(e => e.Value.Errors.Count > 0)
             .Select(e => new
@@ -43,7 +69,7 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
         var result = new
         {
             StatusCode = 400,
-            Message = "Validation failed.",
+            Message = localizer["ValidationFailed"], // must exist in your .resx files
             Errors = errors
         };
 
@@ -56,10 +82,14 @@ var app = builder.Build();
 
 try
 {
-    // Custom global error handler
+    // Localization middleware
+    var locOptions = app.Services.GetRequiredService<IOptions<RequestLocalizationOptions>>();
+    app.UseRequestLocalization(locOptions.Value);
+
+    // Error handler (uses localization inside)
     app.UseMiddleware<InternshipProject1.Middleware.ErrorHandlingMiddleware>();
 
-    // Enable Swagger
+    // Swagger
     app.UseSwagger();
     app.UseSwaggerUI(c =>
     {
@@ -73,7 +103,7 @@ try
     app.MapControllers();
     app.MapHealthChecks("/health");
 
-    // Migrate & Seed Database
+    // DB migration + seed
     using (var scope = app.Services.CreateScope())
     {
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -82,10 +112,8 @@ try
     }
 
     app.Run();
-    //something
 }
 catch (Exception ex)
 {
     Console.WriteLine($"Application failed to start: {ex.Message}");
 }
-

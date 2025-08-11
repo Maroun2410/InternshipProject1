@@ -5,27 +5,28 @@ namespace InternshipProject1.Dtos
 {
     public class OwnerDto
     {
-        [Required]
+        [Required(ErrorMessageResourceType = typeof(SharedResource), ErrorMessageResourceName = "FieldRequired")]
         public string Name { get; set; }
 
-        [Required(ErrorMessage = "Email is required.")]
-        [EmailAddress(ErrorMessage = "Invalid email format.")]
+        [Required(ErrorMessageResourceType = typeof(SharedResource), ErrorMessageResourceName = "FieldRequired")]
+        [EmailAddress(ErrorMessageResourceType = typeof(SharedResource), ErrorMessageResourceName = "InvalidEmail")]
         public string Email { get; set; }
 
-        [Required]
+        [Required(ErrorMessageResourceType = typeof(SharedResource), ErrorMessageResourceName = "FieldRequired")]
         public string PhoneNumber { get; set; }
 
-        [Required]
+        [Required(ErrorMessageResourceType = typeof(SharedResource), ErrorMessageResourceName = "FieldRequired")]
         public string Address { get; set; }
 
-        [Required]
+        [Required(ErrorMessageResourceType = typeof(SharedResource), ErrorMessageResourceName = "FieldRequired")]
         public string NationalId { get; set; }
 
-        [Required]
-        [Range(10, 100, ErrorMessage = "Age must be between 10 and 100.")]
+        [Required(ErrorMessageResourceType = typeof(SharedResource), ErrorMessageResourceName = "FieldRequired")]
+        [Range(10, 100, ErrorMessageResourceType = typeof(SharedResource), ErrorMessageResourceName = "Validation.QuantityRange")]
         public int Age { get; set; }
 
-        [Required]
+        [Required(ErrorMessageResourceType = typeof(SharedResource), ErrorMessageResourceName = "FieldRequired")]
+        [EnumDataType(typeof(InventoryStatus), ErrorMessage = "Type must be one of : Private, Public.")]
         public OwnerType Type { get; set; }
     }
 }

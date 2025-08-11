@@ -1,21 +1,23 @@
 ﻿using System.Net;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Localization;
 
 namespace InternshipProject1.Middleware
 {
     public class ErrorHandlingMiddleware
     {
         private readonly RequestDelegate _next;
+        private readonly IStringLocalizer<SharedResource> _localizer;
 
-        public ErrorHandlingMiddleware(RequestDelegate next)
+        public ErrorHandlingMiddleware(RequestDelegate next, IStringLocalizer<SharedResource> localizer)
         {
             _next = next;
+            _localizer = localizer;
         }
 
         public async Task InvokeAsync(HttpContext context)
         {
-            // Exclude Swagger and static files from wrapping
             if (context.Request.Path.StartsWithSegments("/swagger") ||
                 context.Request.Path.StartsWithSegments("/favicon") ||
                 context.Request.Path.StartsWithSegments("/swagger-ui") ||
@@ -32,9 +34,8 @@ namespace InternshipProject1.Middleware
                 using var memoryStream = new MemoryStream();
                 context.Response.Body = memoryStream;
 
-                await _next(context); // let the request proceed
+                await _next(context);
 
-                // Normalize status code category
                 int actualStatusCode = context.Response.StatusCode;
                 int normalizedStatusCode = NormalizeStatusCode(actualStatusCode);
 
@@ -49,30 +50,27 @@ namespace InternshipProject1.Middleware
                     jsonResponse = JsonSerializer.Serialize(new
                     {
                         StatusCode = 200,
-                        Message = "No content"
+                        Message = _localizer["NoContent"]
                     });
                 }
                 else if (actualStatusCode >= 200 && actualStatusCode < 300)
                 {
-                    // Copy the successful content if any, then wrap
-                    memoryStream.Seek(0, SeekOrigin.Begin);
                     memoryStream.Seek(0, SeekOrigin.Begin);
                     var originalContent = await new StreamReader(memoryStream).ReadToEndAsync();
 
                     jsonResponse = JsonSerializer.Serialize(new
                     {
                         StatusCode = 200,
-                        Message = "Success",
+                        Message = _localizer["Success"],
                         Data = TryDeserialize(originalContent)
                     });
-
                 }
                 else if (actualStatusCode >= 400 && actualStatusCode < 500)
                 {
                     jsonResponse = JsonSerializer.Serialize(new
                     {
                         StatusCode = 400,
-                        Message = GetErrorMessage(actualStatusCode)
+                        Message = _localizer[GetErrorMessageKey(actualStatusCode)]
                     });
                 }
                 else if (actualStatusCode >= 500)
@@ -80,7 +78,7 @@ namespace InternshipProject1.Middleware
                     jsonResponse = JsonSerializer.Serialize(new
                     {
                         StatusCode = 500,
-                        Message = "Server error occurred"
+                        Message = _localizer["ServerError"]
                     });
                 }
                 else
@@ -88,56 +86,47 @@ namespace InternshipProject1.Middleware
                     jsonResponse = JsonSerializer.Serialize(new
                     {
                         StatusCode = actualStatusCode,
-                        Message = "Unhandled status"
+                        Message = _localizer["UnhandledStatus"]
                     });
                 }
 
                 await context.Response.WriteAsync(jsonResponse);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Console.WriteLine($"[ErrorHandlingMiddleware] Unhandled Exception: {ex.Message}");
-
                 context.Response.StatusCode = 500;
                 context.Response.ContentType = "application/json";
 
                 var errorResponse = new
                 {
                     StatusCode = 500,
-                    Message = "An unexpected server error occurred."
+                    Message = _localizer["UnexpectedServerError"]
                 };
 
                 await context.Response.WriteAsync(JsonSerializer.Serialize(errorResponse));
             }
-
         }
 
         private int NormalizeStatusCode(int statusCode)
         {
-            if (statusCode >= 200 && statusCode < 300)
-                return 200;
-
-            if (statusCode >= 400 && statusCode < 500)
-                return 400;
-
-            if (statusCode >= 500)
-                return 500;
-
+            if (statusCode >= 200 && statusCode < 300) return 200;
+            if (statusCode >= 400 && statusCode < 500) return 400;
+            if (statusCode >= 500) return 500;
             return statusCode;
         }
 
-        private string GetErrorMessage(int statusCode)
+        private string GetErrorMessageKey(int statusCode)
         {
             return statusCode switch
             {
-                400 => "Bad request.",
-                401 => "Unauthorized access.",
-                403 => "Forbidden access.",
-                404 => "Resource not found.",
-                405 => "Method not allowed.",
-                409 => "Conflict occurred.",
-                422 => "Unprocessable entity.",
-                _ => "Client error occurred."
+                400 => "BadRequest",
+                401 => "Unauthorized",
+                403 => "Forbidden",
+                404 => "NotFound",
+                405 => "MethodNotAllowed",
+                409 => "Conflict",
+                422 => "UnprocessableEntity",
+                _ => "ClientError"
             };
         }
 
@@ -152,9 +141,8 @@ namespace InternshipProject1.Middleware
             }
             catch
             {
-                return json; // If it's not valid JSON, just return the raw string
+                return json;
             }
         }
-
     }
 }
