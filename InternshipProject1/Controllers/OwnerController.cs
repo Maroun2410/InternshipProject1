@@ -40,24 +40,50 @@ namespace InternshipProject1.Controllers
 
         [HttpPost]
         public async Task<IActionResult> CreateOwner([FromBody] OwnerDto dto)
-        { 
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+
+            var email = (dto.Email ?? string.Empty).Trim();
+            var phone = (dto.PhoneNumber ?? string.Empty).Trim();
+            var nid = (dto.NationalId ?? string.Empty).Trim();
+
+            // Case-insensitive email check
+            if (await _context.Owners.AnyAsync(o => o.Email.ToLower() == email.ToLower()))
+                return BadRequest(new { Message = "Email already in use." });
+
+            if (await _context.Owners.AnyAsync(o => o.PhoneNumber == phone))
+                return BadRequest(new { Message = "Phone number already in use." });
+
+            if (await _context.Owners.AnyAsync(o => o.NationalId == nid))
+                return BadRequest(new { Message = "National ID already in use." });
+
             var owner = new Owner
             {
                 Id = Guid.NewGuid(),
                 Name = dto.Name,
-                Email = dto.Email,
-                PhoneNumber = dto.PhoneNumber,
+                Email = email,
+                PhoneNumber = phone,
                 Address = dto.Address,
-                NationalId = dto.NationalId,
+                NationalId = nid,
                 Age = dto.Age,
                 Type = dto.Type
             };
 
             _context.Owners.Add(owner);
-            await _context.SaveChangesAsync();
+
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateException)
+            {
+                // Safety net if something slips past checks (race condition)
+                return Conflict(new { Message = "Owner violates a unique constraint." });
+            }
 
             return CreatedAtAction(nameof(GetOwner), new { id = owner.Id }, owner);
         }
+
 
         [HttpPut("{id}")]
         public async Task<IActionResult> UpdateOwner(Guid id, OwnerDto dto)

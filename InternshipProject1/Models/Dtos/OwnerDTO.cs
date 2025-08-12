@@ -22,11 +22,11 @@ namespace InternshipProject1.Dtos
         public string NationalId { get; set; }
 
         [Required(ErrorMessageResourceType = typeof(SharedResource), ErrorMessageResourceName = "FieldRequired")]
-        [Range(10, 100, ErrorMessageResourceType = typeof(SharedResource), ErrorMessageResourceName = "Validation.QuantityRange")]
+        [Range(10, 100, ErrorMessageResourceType = typeof(SharedResource), ErrorMessageResourceName = "Validation_AgeRange")]
         public int Age { get; set; }
 
         [Required(ErrorMessageResourceType = typeof(SharedResource), ErrorMessageResourceName = "FieldRequired")]
-        [EnumDataType(typeof(InventoryStatus), ErrorMessage = "Type must be one of : Private, Public.")]
+        [EnumDataType(typeof(OwnerType), ErrorMessage = "Type must be one of : Private, Public.")]
         public OwnerType Type { get; set; }
     }
 }

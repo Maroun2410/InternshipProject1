@@ -57,8 +57,19 @@ namespace InternshipProject1.Controllers
 
         // POST: api/Trees
         [HttpPost]
-        public async Task<ActionResult<TreeDto>> PostTree(TreeCreateDto treeDto)
+        public async Task<ActionResult<TreeDto>> PostTree([FromBody] TreeCreateDto treeDto)
         {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+
+            var name = (treeDto.Name ?? string.Empty).Trim();
+
+            // Case-insensitive duplicate check
+            var nameExists = await _context.TreeSpecies
+                .AnyAsync(t => t.Name.ToLower() == name.ToLower());
+
+            if (nameExists)
+                return BadRequest(new { Message = "Tree species name already exists." });
+
             var tree = new TreeSpecies
             {
                 Name = treeDto.Name,
@@ -79,6 +90,7 @@ namespace InternshipProject1.Controllers
 
             return CreatedAtAction(nameof(GetTree), new { id = tree.Id }, resultDto);
         }
+
 
 
         // PUT: api/Trees/5
