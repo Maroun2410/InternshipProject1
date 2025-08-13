@@ -16,8 +16,8 @@ using Serilog.Events;
 using Serilog.Formatting.Json;
 
 // ------------------------------------------------------------
-// 1) Bootstrap a lightweight configuration to read log path
-//    BEFORE building the WebApplication (so early logs work).
+// 1) Bootstrap minimal configuration BEFORE building the app,
+//    so we can configure Serilog early (and log app start).
 // ------------------------------------------------------------
 var envName = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production";
 
@@ -34,15 +34,13 @@ var defaultLogDir = Path.Combine(
     "Internship_In-Mobiles", "logs"
 );
 
-// Use config if present; fallback otherwise
+// Read from config if present; otherwise use fallback
 var logDirectory = rawConfig["LoggingDirectory"] ?? defaultLogDir;
-
-// Ensure the directory exists
 Directory.CreateDirectory(logDirectory);
 
 // ------------------------------------------------------------
-// 2) Configure Serilog (file per day + console).
-//    You can tune noise via MinimumLevel.Override lines.
+// 2) Configure Serilog (JSON lines to file + console).
+//    Noise tuned down for Microsoft/*.
 // ------------------------------------------------------------
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
@@ -61,7 +59,7 @@ Log.Logger = new LoggerConfiguration()
     .CreateLogger();
 
 // ------------------------------------------------------------
-// 3) Build application (now you can use builder.Configuration).
+// 3) Build the application
 // ------------------------------------------------------------
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSerilog();
@@ -81,9 +79,7 @@ builder.Services.Configure<RequestLocalizationOptions>(options =>
     options.DefaultRequestCulture = new RequestCulture("en");
     options.SupportedCultures = supportedCultures;
     options.SupportedUICultures = supportedCultures;
-
-    // Allow switching via ?culture=fr
-    options.RequestCultureProviders.Insert(0, new QueryStringRequestCultureProvider());
+    options.RequestCultureProviders.Insert(0, new QueryStringRequestCultureProvider()); // ?culture=fr
 });
 
 // ---------------------- Services ---------------------- //
@@ -134,7 +130,7 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
     };
 });
 
-// ---------------------- Build App ---------------------- //
+// ---------------------- App pipeline ---------------------- //
 var app = builder.Build();
 
 try
@@ -143,25 +139,22 @@ try
     var locOptions = app.Services.GetRequiredService<IOptions<RequestLocalizationOptions>>();
     app.UseRequestLocalization(locOptions.Value);
 
-    // 2) Correlation FIRST (so everything downstream has it)
-    app.UseMiddleware<InternshipProject1.Middleware.CorrelationIdMiddleware>();
+    // 2) Unified pipeline (Correlation + Error handling + Outcome logging + Wrapping)
+    app.UseMiddleware<InternshipProject1.Middleware.UnifiedPipelineMiddleware>();
 
-    // 3) Request logging (after correlation so it picks up CorrelationId)
+    // 3) Request logging (after unified pipeline so it picks up CorrelationId)
     app.UseSerilogRequestLogging(opts =>
     {
         opts.EnrichDiagnosticContext = (diag, ctx) =>
         {
-            diag.Set("CorrelationId", InternshipProject1.Middleware.CorrelationIdMiddleware.Get(ctx));
+            diag.Set("CorrelationId", InternshipProject1.Middleware.UnifiedPipelineMiddleware.GetCorrelationId(ctx));
             diag.Set("RequestPath", ctx.Request.Path);
             diag.Set("RequestMethod", ctx.Request.Method);
             diag.Set("UserAgent", ctx.Request.Headers["User-Agent"].ToString());
         };
     });
 
-    // 4) Global error handler (catches everything after this point)
-    app.UseMiddleware<InternshipProject1.Middleware.ErrorHandlingMiddleware>();
-
-    // 5) Swagger (your error middleware already bypasses swagger paths)
+    // 4) Swagger (unified middleware already bypasses swagger paths)
     app.UseSwagger();
     app.UseSwaggerUI(c =>
     {
@@ -169,18 +162,18 @@ try
         c.RoutePrefix = string.Empty;
     });
 
-    // 6) Usual web plumbing
+    // 5) Usual web plumbing
     app.UseHttpsRedirection();
 
     // If you have auth, keep this order:
     // app.UseAuthentication();
     app.UseAuthorization();
 
-    // 7) Endpoints
+    // 6) Endpoints
     app.MapControllers();
     app.MapHealthChecks("/health");
 
-    // 8) DB migration + seed
+    // 7) DB migration + seed
     using (var scope = app.Services.CreateScope())
     {
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();

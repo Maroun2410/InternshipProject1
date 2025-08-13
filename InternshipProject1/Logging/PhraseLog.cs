@@ -70,7 +70,8 @@ public static class PhraseLog
     }
 
     public static string CorrelationIdFrom(HttpContext ctx)
-        => InternshipProject1.Middleware.CorrelationIdMiddleware.Get(ctx);
+    => InternshipProject1.Middleware.UnifiedPipelineMiddleware.GetCorrelationId(ctx);
+
 
     public static string CauseFromException(Exception ex)
     {
