@@ -1,3 +1,4 @@
+using System.Globalization;
 using InternshipProject1;
 using InternshipProject1.Data;
 using InternshipProject1.Filters;
@@ -5,27 +6,63 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Localization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Localization;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi.Models;
 using OrchardApp.Data.Seed;
 using Serilog;
+using Serilog.Events;
 using Serilog.Formatting.Json;
-using System.Globalization;
 
-//
-// ---------------------- Logging (Serilog) ---------------------- //
+// ------------------------------------------------------------
+// 1) Bootstrap a lightweight configuration to read log path
+//    BEFORE building the WebApplication (so early logs work).
+// ------------------------------------------------------------
+var envName = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production";
+
+var rawConfig = new ConfigurationBuilder()
+    .SetBasePath(Directory.GetCurrentDirectory())
+    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+    .AddJsonFile($"appsettings.{envName}.json", optional: true, reloadOnChange: true)
+    .AddEnvironmentVariables()
+    .Build();
+
+// Default safe per-user directory (works on any machine)
+var defaultLogDir = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+    "Internship_In-Mobiles", "logs"
+);
+
+// Use config if present; fallback otherwise
+var logDirectory = rawConfig["LoggingDirectory"] ?? defaultLogDir;
+
+// Ensure the directory exists
+Directory.CreateDirectory(logDirectory);
+
+// ------------------------------------------------------------
+// 2) Configure Serilog (file per day + console).
+//    You can tune noise via MinimumLevel.Override lines.
+// ------------------------------------------------------------
 Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.Hosting.Lifetime", LogEventLevel.Information)
+    .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
     .Enrich.FromLogContext()
     .Enrich.WithProperty("Application", "Internship_In-Mobiles")
-    .WriteTo.File(new JsonFormatter(),
-        path: "logs/app-.json",
+    .WriteTo.File(
+        new JsonFormatter(),
+        path: Path.Combine(logDirectory, "app-.json"),
         rollingInterval: RollingInterval.Day,
-        retainedFileCountLimit: 14)
+        retainedFileCountLimit: 14
+    )
     .WriteTo.Console(new JsonFormatter())
-    .MinimumLevel.Information()
     .CreateLogger();
 
+// ------------------------------------------------------------
+// 3) Build application (now you can use builder.Configuration).
+// ------------------------------------------------------------
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSerilog();
 
@@ -161,4 +198,3 @@ finally
 {
     Log.CloseAndFlush();
 }
-
