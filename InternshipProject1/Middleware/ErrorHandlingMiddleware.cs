@@ -1,8 +1,10 @@
-﻿using System.Net;
-using System.Text.Json;
+﻿// Middleware/ErrorHandlingMiddleware.cs
+using InternshipProject1.Logging; // <-- add this
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Localization;
 using Serilog;
+using System.Net;
+using System.Text.Json;
 
 namespace InternshipProject1.Middleware
 {
@@ -49,6 +51,29 @@ namespace InternshipProject1.Middleware
                 context.Response.StatusCode = norm;
 
                 var correlationId = CorrelationIdMiddleware.Get(context);
+
+                // --------- E1 phrase logging (success + client errors) ---------
+                var action = PhraseLog.InferAction(context.Request.Method);
+                var entity = PhraseLog.InferEntity(context);
+                var outcome = PhraseLog.OutcomeFromStatus(actual);
+                var where = PhraseLog.WhereFrom(context);
+                var key = context.Request.RouteValues.TryGetValue("id", out var idObj) ? idObj?.ToString() : null;
+
+                var phrase = PhraseLog.BuildE1(
+                    action: action,
+                    entity: entity,
+                    outcome: outcome,
+                    cause: null,
+                    key: key,
+                    where: where,
+                    correlationId: correlationId
+                );
+
+                // Note: keep structured props for dashboards
+                Log.ForContext("CorrelationId", correlationId)
+                   .ForContext("HttpStatus", actual)
+                   .Information("{Phrase}", phrase);
+                // --------------------------------------------------------------
 
                 string json;
                 if (actual == StatusCodes.Status204NoContent)
@@ -102,13 +127,31 @@ namespace InternshipProject1.Middleware
             }
             catch (Exception ex)
             {
-                // FULL diagnostics to logs for you
                 var correlationId = CorrelationIdMiddleware.Get(context);
+
+                // --------- E1 phrase logging (FAILED + cause) ---------
+                var action = PhraseLog.InferAction(context.Request.Method);
+                var entity = PhraseLog.InferEntity(context);
+                var where = PhraseLog.WhereFrom(context);
+                var key = context.Request.RouteValues.TryGetValue("id", out var idObj) ? idObj?.ToString() : null;
+                var cause = PhraseLog.CauseFromException(ex);
+
+                var phrase = PhraseLog.BuildE1(
+                    action: action,
+                    entity: entity,
+                    outcome: "FAILED",
+                    cause: cause,
+                    key: key,
+                    where: where,
+                    correlationId: correlationId
+                );
+
                 Log.ForContext("CorrelationId", correlationId)
                    .ForContext("Path", context.Request.Path)
                    .ForContext("Method", context.Request.Method)
                    .ForContext("QueryString", context.Request.QueryString.Value)
-                   .Error(ex, "Unhandled exception");
+                   .Error(ex, "{Phrase}", phrase);
+                // ------------------------------------------------------
 
                 // Friendly message to client
                 context.Response.Body = originalBody;

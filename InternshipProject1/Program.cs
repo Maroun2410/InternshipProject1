@@ -1,23 +1,29 @@
+using InternshipProject1;
 using InternshipProject1.Data;
+using InternshipProject1.Filters;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Localization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.OpenApi.Models;
-using OrchardApp.Data.Seed;
-using InternshipProject1.Filters;
-using System.Globalization;
-using Microsoft.AspNetCore.Localization;
 using Microsoft.Extensions.Localization;
 using Microsoft.Extensions.Options;
-using InternshipProject1;
+using Microsoft.OpenApi.Models;
+using OrchardApp.Data.Seed;
 using Serilog;
+using Serilog.Formatting.Json;
+using System.Globalization;
 
 //
 // ---------------------- Logging (Serilog) ---------------------- //
 Log.Logger = new LoggerConfiguration()
     .Enrich.FromLogContext()
-    .WriteTo.Console()
-    .WriteTo.File("Logs/app-.log", rollingInterval: RollingInterval.Day, retainedFileCountLimit: 7)
+    .Enrich.WithProperty("Application", "Internship_In-Mobiles")
+    .WriteTo.File(new JsonFormatter(),
+        path: "logs/app-.json",
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 14)
+    .WriteTo.Console(new JsonFormatter())
+    .MinimumLevel.Information()
     .CreateLogger();
 
 var builder = WebApplication.CreateBuilder(args);
@@ -96,34 +102,48 @@ var app = builder.Build();
 
 try
 {
-    // Localization middleware (must be early)
+    // 1) Localization early
     var locOptions = app.Services.GetRequiredService<IOptions<RequestLocalizationOptions>>();
     app.UseRequestLocalization(locOptions.Value);
 
-    // Optional: request logging per request (Serilog)
-    app.UseSerilogRequestLogging();
-
-    // Correlation ID must run BEFORE error handler to tag all logs/responses
+    // 2) Correlation FIRST (so everything downstream has it)
     app.UseMiddleware<InternshipProject1.Middleware.CorrelationIdMiddleware>();
 
-    // Global error handler (already localizes messages)
+    // 3) Request logging (after correlation so it picks up CorrelationId)
+    app.UseSerilogRequestLogging(opts =>
+    {
+        opts.EnrichDiagnosticContext = (diag, ctx) =>
+        {
+            diag.Set("CorrelationId", InternshipProject1.Middleware.CorrelationIdMiddleware.Get(ctx));
+            diag.Set("RequestPath", ctx.Request.Path);
+            diag.Set("RequestMethod", ctx.Request.Method);
+            diag.Set("UserAgent", ctx.Request.Headers["User-Agent"].ToString());
+        };
+    });
+
+    // 4) Global error handler (catches everything after this point)
     app.UseMiddleware<InternshipProject1.Middleware.ErrorHandlingMiddleware>();
 
-    // Swagger UI
+    // 5) Swagger (your error middleware already bypasses swagger paths)
     app.UseSwagger();
     app.UseSwaggerUI(c =>
     {
         c.SwaggerEndpoint("/swagger/v1/swagger.json", "Internship API v1");
-        c.RoutePrefix = string.Empty; // root
+        c.RoutePrefix = string.Empty;
     });
 
+    // 6) Usual web plumbing
     app.UseHttpsRedirection();
+
+    // If you have auth, keep this order:
+    // app.UseAuthentication();
     app.UseAuthorization();
 
+    // 7) Endpoints
     app.MapControllers();
     app.MapHealthChecks("/health");
 
-    // DB migration + seed
+    // 8) DB migration + seed
     using (var scope = app.Services.CreateScope())
     {
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -141,3 +161,4 @@ finally
 {
     Log.CloseAndFlush();
 }
+
