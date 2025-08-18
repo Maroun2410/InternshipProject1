@@ -1,14 +1,15 @@
-﻿using IAppEmailSender = MobileAPI.Email.IEmailSender;
-using DevEmailSender = MobileAPI.Email.DevEmailSender;
-using SesEmailSender = MobileAPI.Email.SesEmailSender;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
+﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using MobileAPI.Auth;
 using MobileAPI.Email;
 using MobileAPI.Infrastructure;
+using MobileAPI.Services;
 using System.Text;
+using DevEmailSender = MobileAPI.Email.DevEmailSender;
+using IAppEmailSender = MobileAPI.Email.IEmailSender;
+using SesEmailSender = MobileAPI.Email.SesEmailSender;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -21,6 +22,8 @@ builder.Services.AddDbContext<AppDbContext>(opt => opt.UseNpgsql(cs));
 
 // ✅ SignInManager needs HttpContextAccessor
 builder.Services.AddHttpContextAccessor();
+
+builder.Services.AddScoped<ICurrentUser, CurrentUserFromHttpContext>();
 
 // ---------------- Identity (GUID keys)  ✅ ensure AddSignInManager and ClaimsPrincipalFactory
 builder.Services
