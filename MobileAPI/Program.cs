@@ -1,14 +1,15 @@
-﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
+﻿using System.Text;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
 using MobileAPI.Auth;
-using MobileAPI.Email;
 using MobileAPI.Infrastructure;
 using MobileAPI.Services;
-using System.Text;
-using DevEmailSender = MobileAPI.Email.DevEmailSender;
+// alias our email interfaces/impls to avoid clashes with Identity UI
 using IAppEmailSender = MobileAPI.Email.IEmailSender;
+using DevEmailSender = MobileAPI.Email.DevEmailSender;
 using SesEmailSender = MobileAPI.Email.SesEmailSender;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -20,12 +21,11 @@ builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("Jwt"))
 var cs = builder.Configuration.GetConnectionString("DefaultConnection")!;
 builder.Services.AddDbContext<AppDbContext>(opt => opt.UseNpgsql(cs));
 
-// ✅ SignInManager needs HttpContextAccessor
+// ---------------- HttpContext + CurrentUser accessor
 builder.Services.AddHttpContextAccessor();
-
 builder.Services.AddScoped<ICurrentUser, CurrentUserFromHttpContext>();
 
-// ---------------- Identity (GUID keys)  ✅ ensure AddSignInManager and ClaimsPrincipalFactory
+// ---------------- Identity (GUID keys)
 builder.Services
     .AddIdentityCore<ApplicationUser>(o =>
     {
@@ -37,10 +37,10 @@ builder.Services
     })
     .AddRoles<IdentityRole<Guid>>()
     .AddEntityFrameworkStores<AppDbContext>()
-    .AddSignInManager() // ✅ THIS registers SignInManager<ApplicationUser>
+    .AddSignInManager()
     .AddDefaultTokenProviders();
 
-// Some hosts need this explicit registration for SignInManager deps:
+// Claims principal factory for SignInManager deps
 builder.Services.AddScoped<IUserClaimsPrincipalFactory<ApplicationUser>,
     UserClaimsPrincipalFactory<ApplicationUser, IdentityRole<Guid>>>();
 
@@ -66,6 +66,21 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             IssuerSigningKey = signingKey,
             ClockSkew = TimeSpan.Zero
         };
+
+        // TEMP: log failures so 401s are easy to diagnose
+        options.Events = new JwtBearerEvents
+        {
+            OnAuthenticationFailed = ctx =>
+            {
+                Console.WriteLine("JWT auth failed: " + ctx.Exception.Message);
+                return Task.CompletedTask;
+            },
+            OnChallenge = ctx =>
+            {
+                Console.WriteLine("JWT challenge: " + (ctx.ErrorDescription ?? "(no desc)"));
+                return Task.CompletedTask;
+            }
+        };
     });
 
 // ---------------- AuthZ
@@ -85,26 +100,35 @@ else
 builder.Services.AddHostedService<RoleSeederHostedService>();
 builder.Services.AddScoped<ITokenService, TokenService>();
 
-// ---------------- MVC + Swagger (unchanged)
+// ---------------- MVC + Swagger
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc(builder.Configuration["Swagger:Version"] ?? "v1",
-        new Microsoft.OpenApi.Models.OpenApiInfo
-        { Title = builder.Configuration["Swagger:Title"] ?? "MobileAPI", Version = "v1" });
+        new OpenApiInfo { Title = builder.Configuration["Swagger:Title"] ?? "MobileAPI", Version = "v1" });
 
-    var scheme = new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
+        Description = "Paste the JWT ONLY (no 'Bearer ' prefix).",
         Name = "Authorization",
-        Type = Microsoft.OpenApi.Models.SecuritySchemeType.Http,
+        In = ParameterLocation.Header,
+        Type = SecuritySchemeType.Http,
         Scheme = "bearer",
-        BearerFormat = "JWT",
-        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
-        Description = "Enter 'Bearer {token}'"
-    };
-    c.AddSecurityDefinition("Bearer", scheme);
-    c.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement { [scheme] = new List<string>() });
+        BearerFormat = "JWT"
+    });
+
+    // Reference the scheme by ID so Swagger actually sends the header
+    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" }
+            },
+            Array.Empty<string>()
+        }
+    });
 });
 
 var app = builder.Build();

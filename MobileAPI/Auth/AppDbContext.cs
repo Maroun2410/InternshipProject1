@@ -3,7 +3,6 @@ using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using MobileAPI.Domain;
 using MobileAPI.Services;
-using System.Linq.Expressions;
 
 namespace MobileAPI.Auth;
 
@@ -12,12 +11,9 @@ public class AppDbContext : IdentityDbContext<ApplicationUser, IdentityRole<Guid
     private readonly ICurrentUser? _current;
 
     public AppDbContext(DbContextOptions<AppDbContext> options, ICurrentUser? current = null)
-        : base(options)
-    {
-        _current = current;
-    }
+        : base(options) => _current = current;
 
-    // Identity-supporting table already present
+    // Identity
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
     // Domain
@@ -27,6 +23,7 @@ public class AppDbContext : IdentityDbContext<ApplicationUser, IdentityRole<Guid
     public DbSet<Equipment> Equipment => Set<Equipment>();
     public DbSet<TaskItem> Tasks => Set<TaskItem>();
     public DbSet<WorkerFarmAssignment> WorkerFarmAssignments => Set<WorkerFarmAssignment>();
+    public DbSet<WorkerInvite> WorkerInvites => Set<WorkerInvite>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -59,35 +56,39 @@ public class AppDbContext : IdentityDbContext<ApplicationUser, IdentityRole<Guid
             w.HasIndex(x => new { x.OwnerId, x.WorkerUserId, x.FarmId }).IsUnique();
         });
 
-        // Global Owner filter + soft delete for owner-scoped entities
-        var ownerId = CurrentOwnerId; // captured once
-        foreach (var et in b.Model.GetEntityTypes())
+        b.Entity<WorkerInvite>(wi =>
         {
-            if (typeof(IOwnerScoped).IsAssignableFrom(et.ClrType))
-            {
-                var param = Expression.Parameter(et.ClrType, "e");
-                var ownerProp = Expression.Property(param, nameof(IOwnerScoped.OwnerId));
-                var isDeletedProp = Expression.PropertyOrField(param, nameof(BaseEntity.IsDeleted));
+            wi.ToTable("WorkerInvites");
+            wi.HasIndex(x => new { x.OwnerId, x.Email }).IsUnique();
+            wi.Property(x => x.TokenHash).IsRequired().HasMaxLength(128);
+        });
 
-                var ownerEq = Expression.Equal(ownerProp, Expression.Constant(ownerId));
-                var notDeleted = Expression.Equal(isDeletedProp, Expression.Constant(false));
+        // ---------- Global query filters ----------
+        // IMPORTANT: reference the DbContext instance property (CurrentOwnerId)
+        // so EF reads it per DbContext instance — do NOT capture into a local variable.
 
-                var body = Expression.AndAlso(ownerEq, notDeleted);
-                var lambda = Expression.Lambda(body, param);
-                et.SetQueryFilter(lambda);
-            }
-            else if (typeof(BaseEntity).IsAssignableFrom(et.ClrType))
-            {
-                // For non-owner-scoped entities (like WorkerFarmAssignment), still hide soft-deleted
-                var param = Expression.Parameter(et.ClrType, "e");
-                var isDeletedProp = Expression.PropertyOrField(param, nameof(BaseEntity.IsDeleted));
-                var notDeleted = Expression.Equal(isDeletedProp, Expression.Constant(false));
-                var lambda = Expression.Lambda(notDeleted, param);
-                et.SetQueryFilter(lambda);
-            }
-        }
+        b.Entity<Farm>().HasQueryFilter(e =>
+            !e.IsDeleted && e.OwnerId == CurrentOwnerId);
+
+        b.Entity<Planting>().HasQueryFilter(e =>
+            !e.IsDeleted && e.OwnerId == CurrentOwnerId);
+
+        b.Entity<Harvest>().HasQueryFilter(e =>
+            !e.IsDeleted && e.OwnerId == CurrentOwnerId);
+
+        b.Entity<Equipment>().HasQueryFilter(e =>
+            !e.IsDeleted && e.OwnerId == CurrentOwnerId);
+
+        b.Entity<TaskItem>().HasQueryFilter(e =>
+            !e.IsDeleted && e.OwnerId == CurrentOwnerId);
+
+        // Non-owner-scoped entities still respect soft delete
+        b.Entity<WorkerFarmAssignment>().HasQueryFilter(e => !e.IsDeleted);
+        b.Entity<WorkerInvite>().HasQueryFilter(e => !e.IsDeleted);
+        b.Entity<RefreshToken>().HasQueryFilter(e => true); // no soft delete on tokens
     }
 
+    // This is read per DbContext instance at query time (used in HasQueryFilter).
     public Guid CurrentOwnerId => _current?.OwnerId ?? Guid.Empty;
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
@@ -100,8 +101,11 @@ public class AppDbContext : IdentityDbContext<ApplicationUser, IdentityRole<Guid
                 entry.Entity.CreatedAt = now;
                 entry.Entity.IsDeleted = false;
 
-                if (entry.Entity is IOwnerScoped scoped && scoped.OwnerId == Guid.Empty && CurrentOwnerId != Guid.Empty)
+                if (entry.Entity is IOwnerScoped scoped &&
+                    scoped.OwnerId == Guid.Empty && CurrentOwnerId != Guid.Empty)
+                {
                     scoped.OwnerId = CurrentOwnerId;
+                }
             }
             else if (entry.State == EntityState.Modified)
             {

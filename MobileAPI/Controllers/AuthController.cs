@@ -258,4 +258,59 @@ public class AuthController : ControllerBase
 
         return Ok(new { message = "Password reset successful." });
     }
+    // ----------- Accept worker invite -----------
+    [HttpPost("accept-invite")]
+    [AllowAnonymous]
+    public async Task<IActionResult> AcceptInvite([FromBody] MobileAPI.Workers.AcceptInviteRequest req)
+    {
+        // Find active invite
+        var tokenHash = _tokens.Sha256(req.Token);
+        var invite = await _db.WorkerInvites
+            .FirstOrDefaultAsync(i => i.Email == req.Email && i.TokenHash == tokenHash && !i.IsRevoked && i.AcceptedAt == null);
+
+        if (invite == null || !invite.IsActive)
+            return BadRequest(new { message = "Invalid or expired invite." });
+
+        // If user already exists for this email, block (or you could attach to this owner if it has no EmployerOwnerId)
+        var existing = await _userManager.FindByEmailAsync(req.Email);
+        if (existing != null)
+            return Conflict(new { message = "An account with this email already exists." });
+
+        // Create Worker user
+        var user = new ApplicationUser
+        {
+            Id = Guid.NewGuid(),
+            Email = req.Email,
+            UserName = req.Email,
+            FullName = string.IsNullOrWhiteSpace(req.FullName) ? req.Email : req.FullName,
+            EmailConfirmed = true, // invite link validated email
+            IsActive = true,
+            EmployerOwnerId = invite.OwnerId
+        };
+
+        var createRes = await _userManager.CreateAsync(user, req.Password);
+        if (!createRes.Succeeded) return BadRequest(new { errors = createRes.Errors });
+
+        await _userManager.AddToRoleAsync(user, "Worker");
+
+        // Mark invite accepted
+        invite.AcceptedAt = DateTime.UtcNow;
+        invite.WorkerUserId = user.Id;
+        await _db.SaveChangesAsync();
+
+        return Ok(new { message = "Invite accepted. You can now log in as a Worker." });
+    }
+
+    [HttpGet("whoami")]
+    [Authorize]
+    public IActionResult WhoAmI()
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var ownerId = User.FindFirst("owner_id")?.Value;
+        var roles = User.FindAll(ClaimTypes.Role).Select(r => r.Value).ToArray();
+        var claims = User.Claims.Select(c => new { c.Type, c.Value }).ToArray();
+        return Ok(new { userId, ownerId, roles, claims });
+    }
+
+
 }
