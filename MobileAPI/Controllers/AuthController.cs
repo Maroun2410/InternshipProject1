@@ -63,10 +63,10 @@ public class AuthController : ControllerBase
         // Assign Owner role
         await _userManager.AddToRoleAsync(user, "Owner");
 
-        // Build confirmation link
+        // Build confirmation link (use current request's host/port)
         var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
-        var confirmBase = _cfg["App:ConfirmEmailUrl"] ?? "https://localhost:5001/confirm-email";
-        var url = $"{confirmBase}?userId={user.Id}&token={Uri.EscapeDataString(token)}";
+        var baseUrl = $"{Request.Scheme}://{Request.Host}"; // e.g., https://localhost:7106
+        var url = $"{baseUrl}/api/auth/confirm-email?userId={user.Id}&token={Uri.EscapeDataString(token)}";
 
         // Send email (DevEmailSender logs to console; SES sends real email)
         await _email.SendAsync(
@@ -229,8 +229,8 @@ public class AuthController : ControllerBase
         if (user == null) return Ok(new { message = "If an account exists, an email has been sent." });
 
         var token = await _userManager.GeneratePasswordResetTokenAsync(user);
-        var baseUrl = _cfg["App:ResetPasswordUrl"] ?? "https://localhost:5001/reset-password";
-        var url = $"{baseUrl}?userId={user.Id}&token={Uri.EscapeDataString(token)}";
+        var baseUrl = $"{Request.Scheme}://{Request.Host}";
+        var url = $"{baseUrl}/api/auth/reset-password?userId={user.Id}&token={Uri.EscapeDataString(token)}";
 
         await _email.SendAsync(user.Email!, "Reset your password",
             $"<p>Hello {WebUtility.HtmlEncode(user.FullName ?? user.Email)},</p>" +
