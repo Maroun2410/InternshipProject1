@@ -17,13 +17,24 @@ var builder = WebApplication.CreateBuilder(args);
 // ---------------- Config
 builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("Jwt"));
 
-// ---------------- DbContext (PostgreSQL)
-var cs = builder.Configuration.GetConnectionString("DefaultConnection")!;
-builder.Services.AddDbContext<AppDbContext>(opt => opt.UseNpgsql(cs));
-
 // ---------------- HttpContext + CurrentUser accessor
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, CurrentUserFromHttpContext>();
+
+// ---------------- RLS session interceptor
+builder.Services.AddScoped<RlsSessionInterceptor>();
+
+// ---------------- DbContext (PostgreSQL) + interceptor
+builder.Services.AddDbContext<AppDbContext>((sp, opt) =>
+{
+    var cs = builder.Configuration.GetConnectionString("DefaultConnection")!;
+    opt.UseNpgsql(cs);
+    // inject the interceptor so every opened connection gets app.current_owner / app.worker_user_id set
+    opt.AddInterceptors(sp.GetRequiredService<RlsSessionInterceptor>());
+});
+
+builder.Services.AddHostedService<DemoDataSeeder>();
+
 
 // ---------------- Identity (GUID keys)
 builder.Services
@@ -118,16 +129,11 @@ builder.Services.AddSwaggerGen(c =>
         BearerFormat = "JWT"
     });
 
-    // Reference the scheme by ID so Swagger actually sends the header
     c.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
-        {
-            new OpenApiSecurityScheme
-            {
-                Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" }
-            },
-            Array.Empty<string>()
-        }
+        { new OpenApiSecurityScheme
+            { Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" } },
+          Array.Empty<string>() }
     });
 });
 
