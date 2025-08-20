@@ -5,12 +5,13 @@ using Microsoft.EntityFrameworkCore;
 using System.Linq;
 using System.Net;                 // WebUtility.HtmlEncode
 using System.Security.Claims;
+using MobileAPI.Workers;         // Use AcceptInviteRequest from Workers/Dtos.cs
 using IAppEmailSender = MobileAPI.Email.IEmailSender;
 
 namespace MobileAPI.Auth;
 
 [ApiController]
-[Route("api/[controller]")]
+[Route("api/[controller]")] // => api/auth
 public class AuthController : ControllerBase
 {
     private readonly UserManager<ApplicationUser> _userManager;
@@ -27,7 +28,7 @@ public class AuthController : ControllerBase
         RoleManager<IdentityRole<Guid>> roleManager,
         AppDbContext db,
         ITokenService tokens,
-        IAppEmailSender email,   // use our alias type
+        IAppEmailSender email,
         IConfiguration cfg)
     {
         _userManager = userManager;
@@ -35,7 +36,7 @@ public class AuthController : ControllerBase
         _roleManager = roleManager;
         _db = db;
         _tokens = tokens;
-        _email = email;          // assign to the field named _email
+        _email = email;
         _cfg = cfg;
     }
 
@@ -60,15 +61,12 @@ public class AuthController : ControllerBase
         var createRes = await _userManager.CreateAsync(user, req.Password);
         if (!createRes.Succeeded) return BadRequest(new { errors = createRes.Errors });
 
-        // Assign Owner role
         await _userManager.AddToRoleAsync(user, "Owner");
 
-        // Build confirmation link (use current request's host/port)
         var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
         var baseUrl = $"{Request.Scheme}://{Request.Host}"; // e.g., https://localhost:7106
         var url = $"{baseUrl}/api/auth/confirm-email?userId={user.Id}&token={Uri.EscapeDataString(token)}";
 
-        // Send email (DevEmailSender logs to console; SES sends real email)
         await _email.SendAsync(
             user.Email!,
             "Confirm your email",
@@ -77,23 +75,12 @@ public class AuthController : ControllerBase
             $"<p><a href=\"{url}\">Confirm Email</a></p>"
         );
 
-        // In DEV, return the link and raw token to make testing easy
         var provider = _cfg["Email:Provider"] ?? "Dev";
         if (!provider.Equals("SES", StringComparison.OrdinalIgnoreCase))
-        {
-            return Ok(new
-            {
-                message = "Registered (DEV). Use confirmUrl or token to confirm.",
-                userId = user.Id,
-                confirmUrl = url,
-                token
-            });
-        }
+            return Ok(new { message = "Registered (DEV). Use confirmUrl/token.", userId = user.Id, confirmUrl = url, token });
 
-        // In SES mode (prod), only return a generic message
         return Ok(new { message = "Registered. Please check your email to confirm your account." });
     }
-
 
     // ----------- Confirm email -----------
     [HttpGet("confirm-email")]
@@ -109,7 +96,7 @@ public class AuthController : ControllerBase
         return Ok(new { message = "Email confirmed." });
     }
 
-    // ----------- Login (Owner or Worker) -----------
+    // ----------- Login -----------
     [HttpPost("login")]
     [AllowAnonymous]
     public async Task<ActionResult<LoginResponse>> Login([FromBody] LoginRequest req)
@@ -124,19 +111,16 @@ public class AuthController : ControllerBase
 
         var roles = await _userManager.GetRolesAsync(user);
 
-        // If Worker, must have EmployerOwnerId
         Guid? ownerId = null;
         if (roles.Contains("Owner")) ownerId = user.Id;
         if (roles.Contains("Worker")) ownerId ??= user.EmployerOwnerId;
         if (!ownerId.HasValue) return Forbid();
 
-        // Access token
         var (access, exp) = await _tokens.CreateAccessTokenAsync(user);
 
-        // Refresh token (rotate per login)
         var refreshRaw = _tokens.GenerateSecureToken();
         var refreshHash = _tokens.Sha256(refreshRaw);
-        var refresh = new RefreshToken
+        _db.RefreshTokens.Add(new RefreshToken
         {
             UserId = user.Id,
             TokenHash = refreshHash,
@@ -145,8 +129,7 @@ public class AuthController : ControllerBase
             Device = req.Device,
             UserAgent = req.UserAgent,
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString()
-        };
-        _db.RefreshTokens.Add(refresh);
+        });
         await _db.SaveChangesAsync();
 
         var primaryRole = roles.Contains("Owner") ? "Owner" :
@@ -156,25 +139,39 @@ public class AuthController : ControllerBase
         return new LoginResponse(access, exp, refreshRaw, primaryRole, ownerId);
     }
 
-    // ----------- Refresh token (rotation) -----------
+    // ----------- Refresh token (rotation + reuse detection) -----------
     [HttpPost("refresh")]
     [AllowAnonymous]
     public async Task<ActionResult<LoginResponse>> Refresh([FromBody] RefreshRequest req)
     {
         var hash = _tokens.Sha256(req.RefreshToken);
+
         var token = await _db.RefreshTokens
             .Include(x => x.User)
             .FirstOrDefaultAsync(x => x.TokenHash == hash);
 
-        if (token == null || !token.IsActive || token.User == null)
+        if (token == null || token.User == null)
             return Unauthorized(new { message = "Invalid refresh token" });
 
-        // Rotate: revoke old, issue new
+        // Reuse detection: if a revoked token is presented, revoke ALL of the user's refresh tokens
+        if (token.RevokedAt != null || !token.IsActive)
+        {
+            var all = await _db.RefreshTokens
+                .Where(t => t.UserId == token.UserId && t.RevokedAt == null)
+                .ToListAsync();
+            foreach (var t in all) t.RevokedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync();
+            return Unauthorized(new { message = "Invalid or reused refresh token" });
+        }
+
+        // Rotate current token
         token.RevokedAt = DateTime.UtcNow;
 
         var newRaw = _tokens.GenerateSecureToken();
         var newHash = _tokens.Sha256(newRaw);
-        var newDb = new RefreshToken
+
+        var replacement = new RefreshToken
         {
             UserId = token.UserId,
             TokenHash = newHash,
@@ -184,9 +181,9 @@ public class AuthController : ControllerBase
             UserAgent = req.UserAgent ?? token.UserAgent,
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString()
         };
-        token.ReplacedByTokenHash = newHash;
 
-        _db.RefreshTokens.Add(newDb);
+        token.ReplacedByTokenHash = newHash;
+        _db.RefreshTokens.Add(replacement);
 
         var (access, exp) = await _tokens.CreateAccessTokenAsync(token.User);
         await _db.SaveChangesAsync();
@@ -196,14 +193,15 @@ public class AuthController : ControllerBase
                          : roles.Contains("Worker") ? token.User.EmployerOwnerId
                          : null;
 
-        var primaryRole = roles.Contains("Owner") ? "Owner" :
-                          roles.Contains("Worker") ? "Worker" :
-                          roles.FirstOrDefault() ?? "Owner";
+        var primaryRole = roles.Contains("Owner") ? "Owner"
+                        : roles.Contains("Worker") ? "Worker"
+                        : roles.FirstOrDefault() ?? "Owner";
 
         return new LoginResponse(access, exp, newRaw, primaryRole, ownerId);
     }
 
-    // ----------- Logout (revoke one refresh token) -----------
+
+    // ----------- Logout -----------
     [HttpPost("logout")]
     [Authorize]
     public async Task<IActionResult> Logout([FromBody] LogoutRequest req)
@@ -219,13 +217,12 @@ public class AuthController : ControllerBase
         return Ok(new { message = "Logged out" });
     }
 
-    // ----------- Forgot password (email link) -----------
+    // ----------- Forgot password -----------
     [HttpPost("forgot-password")]
     [AllowAnonymous]
     public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest req)
     {
         var user = await _userManager.FindByEmailAsync(req.Email);
-        // Do not reveal if user does not exist
         if (user == null) return Ok(new { message = "If an account exists, an email has been sent." });
 
         var token = await _userManager.GeneratePasswordResetTokenAsync(user);
@@ -251,56 +248,15 @@ public class AuthController : ControllerBase
         var res = await _userManager.ResetPasswordAsync(user, req.Token, req.NewPassword);
         if (!res.Succeeded) return BadRequest(new { message = "Invalid or expired token", errors = res.Errors });
 
-        // Optional: revoke all refresh tokens for this user
+        // Revoke all active refresh tokens
         var tokens = await _db.RefreshTokens.Where(x => x.UserId == user.Id && x.RevokedAt == null).ToListAsync();
         foreach (var t in tokens) t.RevokedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
 
         return Ok(new { message = "Password reset successful." });
     }
-    // ----------- Accept worker invite -----------
-    [HttpPost("accept-invite")]
-    [AllowAnonymous]
-    public async Task<IActionResult> AcceptInvite([FromBody] MobileAPI.Workers.AcceptInviteRequest req)
-    {
-        // Find active invite
-        var tokenHash = _tokens.Sha256(req.Token);
-        var invite = await _db.WorkerInvites
-            .FirstOrDefaultAsync(i => i.Email == req.Email && i.TokenHash == tokenHash && !i.IsRevoked && i.AcceptedAt == null);
 
-        if (invite == null || !invite.IsActive)
-            return BadRequest(new { message = "Invalid or expired invite." });
-
-        // If user already exists for this email, block (or you could attach to this owner if it has no EmployerOwnerId)
-        var existing = await _userManager.FindByEmailAsync(req.Email);
-        if (existing != null)
-            return Conflict(new { message = "An account with this email already exists." });
-
-        // Create Worker user
-        var user = new ApplicationUser
-        {
-            Id = Guid.NewGuid(),
-            Email = req.Email,
-            UserName = req.Email,
-            FullName = string.IsNullOrWhiteSpace(req.FullName) ? req.Email : req.FullName,
-            EmailConfirmed = true, // invite link validated email
-            IsActive = true,
-            EmployerOwnerId = invite.OwnerId
-        };
-
-        var createRes = await _userManager.CreateAsync(user, req.Password);
-        if (!createRes.Succeeded) return BadRequest(new { errors = createRes.Errors });
-
-        await _userManager.AddToRoleAsync(user, "Worker");
-
-        // Mark invite accepted
-        invite.AcceptedAt = DateTime.UtcNow;
-        invite.WorkerUserId = user.Id;
-        await _db.SaveChangesAsync();
-
-        return Ok(new { message = "Invite accepted. You can now log in as a Worker." });
-    }
-
+    // ----------- Who am I -----------
     [HttpGet("whoami")]
     [Authorize]
     public IActionResult WhoAmI()
@@ -312,5 +268,90 @@ public class AuthController : ControllerBase
         return Ok(new { userId, ownerId, roles, claims });
     }
 
+    // ----------- Logout ALL devices/sessions (revoke all active refresh tokens) -----------
+    [HttpPost("logout-all")]
+    [Authorize]
+    public async Task<IActionResult> LogoutAll()
+    {
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
+        var tokens = await _db.RefreshTokens
+            .Where(x => x.UserId == userId && x.RevokedAt == null)
+            .ToListAsync();
+
+        foreach (var t in tokens) t.RevokedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+
+        return Ok(new { message = "All sessions revoked." });
+    }
+
+
+    // ----------- Invite verification & acceptance -----------
+    // GET /api/auth/check-invite?email=...&token=...
+    [HttpGet("check-invite")]
+    [AllowAnonymous]
+    public async Task<IActionResult> CheckInvite([FromQuery] string email, [FromQuery] string token)
+    {
+        var now = DateTime.UtcNow;
+        var hash = _tokens.Sha256(token);
+
+        var inv = await _db.WorkerInvites
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(i =>
+                i.Email == email &&
+                i.TokenHash == hash &&
+                !i.IsRevoked &&
+                i.AcceptedAt == null &&
+                i.ExpiresAt > now);
+
+        if (inv == null) return NotFound(new { message = "Invalid or expired invite." });
+
+        return Ok(new { email = inv.Email, fullName = inv.FullName, expiresAt = inv.ExpiresAt });
+    }
+
+    // POST /api/auth/accept-invite
+    [HttpPost("accept-invite")]
+    [AllowAnonymous]
+    public async Task<IActionResult> AcceptInvite([FromBody] AcceptInviteRequest req)
+    {
+        var now = DateTime.UtcNow;
+        var hash = _tokens.Sha256(req.Token);
+
+        var inv = await _db.WorkerInvites
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(i =>
+                i.Email == req.Email &&
+                i.TokenHash == hash &&
+                !i.IsRevoked &&
+                i.AcceptedAt == null &&
+                i.ExpiresAt > now);
+
+        if (inv == null) return BadRequest(new { message = "Invalid or expired invite." });
+
+        var existing = await _userManager.FindByEmailAsync(req.Email);
+        if (existing != null) return Conflict(new { message = "An account with this email already exists." });
+
+        var user = new ApplicationUser
+        {
+            Id = Guid.NewGuid(),
+            Email = req.Email,
+            UserName = req.Email,
+            FullName = string.IsNullOrWhiteSpace(req.FullName) ? inv.FullName : req.FullName,
+            EmailConfirmed = true, // invited via email
+            IsActive = true,
+            EmployerOwnerId = inv.OwnerId
+        };
+
+        var createRes = await _userManager.CreateAsync(user, req.Password);
+        if (!createRes.Succeeded) return BadRequest(new { errors = createRes.Errors });
+
+        await _userManager.AddToRoleAsync(user, "Worker");
+
+        inv.AcceptedAt = now;
+        inv.WorkerUserId = user.Id; // if your entity has this column
+        await _db.SaveChangesAsync();
+
+        return Ok(new { message = "Invite accepted. You can now log in as a worker." });
+    }
 }

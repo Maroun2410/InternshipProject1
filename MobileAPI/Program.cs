@@ -1,4 +1,5 @@
 ﻿using System.Text;
+using System.Linq;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -7,12 +8,18 @@ using Microsoft.OpenApi.Models;
 using MobileAPI.Auth;
 using MobileAPI.Infrastructure;
 using MobileAPI.Services;
-// alias our email interfaces/impls to avoid clashes with Identity UI
+using Microsoft.AspNetCore.Mvc;
+// alias our email interfaces/impls
 using IAppEmailSender = MobileAPI.Email.IEmailSender;
 using DevEmailSender = MobileAPI.Email.DevEmailSender;
 using SesEmailSender = MobileAPI.Email.SesEmailSender;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<SuccessEnvelopeFilter>();
+});
 
 // ---------------- Config
 builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("Jwt"));
@@ -29,12 +36,8 @@ builder.Services.AddDbContext<AppDbContext>((sp, opt) =>
 {
     var cs = builder.Configuration.GetConnectionString("DefaultConnection")!;
     opt.UseNpgsql(cs);
-    // inject the interceptor so every opened connection gets app.current_owner / app.worker_user_id set
     opt.AddInterceptors(sp.GetRequiredService<RlsSessionInterceptor>());
 });
-
-builder.Services.AddHostedService<DemoDataSeeder>();
-
 
 // ---------------- Identity (GUID keys)
 builder.Services
@@ -51,13 +54,12 @@ builder.Services
     .AddSignInManager()
     .AddDefaultTokenProviders();
 
-// Claims principal factory for SignInManager deps
 builder.Services.AddScoped<IUserClaimsPrincipalFactory<ApplicationUser>,
     UserClaimsPrincipalFactory<ApplicationUser, IdentityRole<Guid>>>();
 
 builder.Services.Configure<DataProtectionTokenProviderOptions>(o =>
 {
-    o.TokenLifespan = TimeSpan.FromHours(2); // email confirm/reset tokens
+    o.TokenLifespan = TimeSpan.FromHours(2);
 });
 
 // ---------------- AuthN: JWT (HS256 for dev)
@@ -77,8 +79,6 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             IssuerSigningKey = signingKey,
             ClockSkew = TimeSpan.Zero
         };
-
-        // TEMP: log failures so 401s are easy to diagnose
         options.Events = new JwtBearerEvents
         {
             OnAuthenticationFailed = ctx =>
@@ -101,6 +101,16 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("OwnerOrWorkerRead", p => p.RequireRole("Owner", "Worker"));
 });
 
+// ---------------- CORS
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("MobileCors", p =>
+        p.WithOrigins(builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? Array.Empty<string>())
+         .AllowAnyHeader()
+         .AllowAnyMethod()
+         .AllowCredentials());
+});
+
 // ---------------- App services
 var emailProvider = builder.Configuration["Email:Provider"] ?? "Dev";
 if (emailProvider.Equals("SES", StringComparison.OrdinalIgnoreCase))
@@ -108,11 +118,13 @@ if (emailProvider.Equals("SES", StringComparison.OrdinalIgnoreCase))
 else
     builder.Services.AddSingleton<IAppEmailSender, DevEmailSender>();
 
+// Hosted services (roles + demo data)
 builder.Services.AddHostedService<RoleSeederHostedService>();
+builder.Services.AddHostedService<DemoDataSeeder>(); // <= DEMO DATA ENABLED ON EVERY RUN
+
 builder.Services.AddScoped<ITokenService, TokenService>();
 
 // ---------------- MVC + Swagger
-builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -128,14 +140,49 @@ builder.Services.AddSwaggerGen(c =>
         Scheme = "bearer",
         BearerFormat = "JWT"
     });
-
     c.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
-        { new OpenApiSecurityScheme
-            { Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" } },
-          Array.Empty<string>() }
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" }
+            },
+            Array.Empty<string>()
+        }
     });
 });
+
+builder.Services.Configure<ApiBehaviorOptions>(options =>
+{
+    options.InvalidModelStateResponseFactory = context =>
+    {
+        // Flatten validation errors
+        var errors = context.ModelState
+            .Where(kvp => kvp.Value?.Errors.Count > 0)
+            .ToDictionary(
+                kvp => kvp.Key,
+                kvp => kvp.Value!.Errors.Select(e => e.ErrorMessage).ToArray()
+            );
+
+        var pd = new ValidationProblemDetails(errors)
+        {
+            Type = "about:blank",
+            Title = "Validation failed.",
+            Status = StatusCodes.Status400BadRequest,
+            Instance = context.HttpContext.Request.Path
+        };
+        pd.Extensions["traceId"] = context.HttpContext.TraceIdentifier;
+
+        var result = new BadRequestObjectResult(pd);
+        result.ContentTypes.Add("application/problem+json");
+        return result;
+    };
+});
+
+// Cleanup options + hosted service
+builder.Services.Configure<CleanupOptions>(builder.Configuration.GetSection("Cleanup"));
+builder.Services.AddHostedService<BackgroundCleanupHostedService>();
+
 
 var app = builder.Build();
 
@@ -146,6 +193,35 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseMiddleware<UnifiedPipelineMiddleware>();
+
+app.UseStatusCodePages(async statusCtx =>
+{
+    var http = statusCtx.HttpContext;
+    var status = http.Response.StatusCode;
+
+    if (status is 401 or 403 or 404)
+    {
+        var problem = new ProblemDetails
+        {
+            Type = "about:blank",
+            Title = status switch
+            {
+                401 => "Unauthorized",
+                403 => "Forbidden",
+                404 => "Not Found",
+                _ => "Error"
+            },
+            Status = status,
+            Instance = http.Request.Path
+        };
+        problem.Extensions["traceId"] = http.TraceIdentifier;
+
+        http.Response.ContentType = "application/problem+json";
+        await http.Response.WriteAsJsonAsync(problem);
+    }
+});
+
+app.UseCors("MobileCors");
 
 app.UseAuthentication();
 app.UseAuthorization();

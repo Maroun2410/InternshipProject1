@@ -9,11 +9,11 @@ using System.Net;
 using IAppEmailSender = MobileAPI.Email.IEmailSender;
 
 namespace MobileAPI.Controllers;
-
 [ApiController]
-[Route("api/owner/workers")]
+[Route("api/owner/workers/admin")]
 [Authorize(Policy = "OwnerOnlyWrite")]
 public class OwnerWorkersAdminController : ControllerBase
+
 {
     private readonly AppDbContext _db;
     private readonly ICurrentUser _current;
