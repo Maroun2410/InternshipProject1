@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Linq;
 using System.Net;                 // WebUtility.HtmlEncode
 using System.Security.Claims;
-using MobileAPI.Workers;         // Use AcceptInviteRequest from Workers/Dtos.cs
+using MobileAPI.Workers;         // AcceptInviteRequest from Workers/Dtos.cs
 using IAppEmailSender = MobileAPI.Email.IEmailSender;
 
 namespace MobileAPI.Auth;
@@ -40,6 +40,18 @@ public class AuthController : ControllerBase
         _cfg = cfg;
     }
 
+    // Helper: build an absolute URL for confirm/reset using config first, then current request
+    private string BuildUrl(string? configuredBase, string endpointWhenMissing, string query)
+    {
+        var baseUrl = !string.IsNullOrWhiteSpace(configuredBase)
+            ? configuredBase!.TrimEnd()
+            : $"{Request.Scheme}://{Request.Host}{endpointWhenMissing}";
+
+        // if configuredBase already contains ?, append with &, else with ?
+        var sep = baseUrl.Contains('?') ? "&" : "?";
+        return $"{baseUrl}{sep}{query}";
+    }
+
     // ----------- Owner self-registration -----------
     [HttpPost("register-owner")]
     [AllowAnonymous]
@@ -63,21 +75,27 @@ public class AuthController : ControllerBase
 
         await _userManager.AddToRoleAsync(user, "Owner");
 
+        // Build confirmation link from config (preferred) or current host
         var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
-        var baseUrl = $"{Request.Scheme}://{Request.Host}"; // e.g., https://localhost:7106
-        var url = $"{baseUrl}/api/auth/confirm-email?userId={user.Id}&token={Uri.EscapeDataString(token)}";
+        var confirmBase = _cfg["App:ConfirmEmailUrl"]; // e.g. https://localhost:7106/api/auth/confirm-email (recommended)
+        var confirmUrl = BuildUrl(
+            confirmBase,
+            "/api/auth/confirm-email",
+            $"userId={user.Id}&token={Uri.EscapeDataString(token)}"
+        );
 
         await _email.SendAsync(
             user.Email!,
             "Confirm your email",
             $"<p>Hello {WebUtility.HtmlEncode(user.FullName ?? user.Email)},</p>" +
             $"<p>Please confirm your email by clicking the link below:</p>" +
-            $"<p><a href=\"{url}\">Confirm Email</a></p>"
+            $"<p><a href=\"{confirmUrl}\">Confirm Email</a></p>"
         );
 
+        // In non-SES mode, return the link and token to ease DEV testing
         var provider = _cfg["Email:Provider"] ?? "Dev";
         if (!provider.Equals("SES", StringComparison.OrdinalIgnoreCase))
-            return Ok(new { message = "Registered (DEV). Use confirmUrl/token.", userId = user.Id, confirmUrl = url, token });
+            return Ok(new { message = "Registered (DEV). Use confirmUrl/token.", userId = user.Id, confirmUrl, token });
 
         return Ok(new { message = "Registered. Please check your email to confirm your account." });
     }
@@ -153,7 +171,7 @@ public class AuthController : ControllerBase
         if (token == null || token.User == null)
             return Unauthorized(new { message = "Invalid refresh token" });
 
-        // Reuse detection: if a revoked token is presented, revoke ALL of the user's refresh tokens
+        // Reuse detection
         if (token.RevokedAt != null || !token.IsActive)
         {
             var all = await _db.RefreshTokens
@@ -200,7 +218,6 @@ public class AuthController : ControllerBase
         return new LoginResponse(access, exp, newRaw, primaryRole, ownerId);
     }
 
-
     // ----------- Logout -----------
     [HttpPost("logout")]
     [Authorize]
@@ -226,13 +243,19 @@ public class AuthController : ControllerBase
         if (user == null) return Ok(new { message = "If an account exists, an email has been sent." });
 
         var token = await _userManager.GeneratePasswordResetTokenAsync(user);
-        var baseUrl = $"{Request.Scheme}://{Request.Host}";
-        var url = $"{baseUrl}/api/auth/reset-password?userId={user.Id}&token={Uri.EscapeDataString(token)}";
 
-        await _email.SendAsync(user.Email!, "Reset your password",
+        var resetBase = _cfg["App:ResetPasswordUrl"]; // e.g. https://localhost:7106/api/auth/reset-password
+        var resetUrl = BuildUrl(
+            resetBase,
+            "/api/auth/reset-password",
+            $"userId={user.Id}&token={Uri.EscapeDataString(token)}"
+        );
+
+        await _email.SendAsync(
+            user.Email!, "Reset your password",
             $"<p>Hello {WebUtility.HtmlEncode(user.FullName ?? user.Email)},</p>" +
             $"<p>Reset your password by clicking the link below:</p>" +
-            $"<p><a href=\"{url}\">Reset Password</a></p>");
+            $"<p><a href=\"{resetUrl}\">Reset Password</a></p>");
 
         return Ok(new { message = "If an account exists, an email has been sent." });
     }
@@ -268,7 +291,7 @@ public class AuthController : ControllerBase
         return Ok(new { userId, ownerId, roles, claims });
     }
 
-    // ----------- Logout ALL devices/sessions (revoke all active refresh tokens) -----------
+    // ----------- Logout ALL devices/sessions -----------
     [HttpPost("logout-all")]
     [Authorize]
     public async Task<IActionResult> LogoutAll()
@@ -285,9 +308,7 @@ public class AuthController : ControllerBase
         return Ok(new { message = "All sessions revoked." });
     }
 
-
     // ----------- Invite verification & acceptance -----------
-    // GET /api/auth/check-invite?email=...&token=...
     [HttpGet("check-invite")]
     [AllowAnonymous]
     public async Task<IActionResult> CheckInvite([FromQuery] string email, [FromQuery] string token)
@@ -310,7 +331,6 @@ public class AuthController : ControllerBase
         return Ok(new { email = inv.Email, fullName = inv.FullName, expiresAt = inv.ExpiresAt });
     }
 
-    // POST /api/auth/accept-invite
     [HttpPost("accept-invite")]
     [AllowAnonymous]
     public async Task<IActionResult> AcceptInvite([FromBody] AcceptInviteRequest req)
@@ -338,7 +358,7 @@ public class AuthController : ControllerBase
             Email = req.Email,
             UserName = req.Email,
             FullName = string.IsNullOrWhiteSpace(req.FullName) ? inv.FullName : req.FullName,
-            EmailConfirmed = true, // invited via email
+            EmailConfirmed = true,
             IsActive = true,
             EmployerOwnerId = inv.OwnerId
         };

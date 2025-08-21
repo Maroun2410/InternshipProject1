@@ -1,17 +1,19 @@
-﻿using System.Text;
-using System.Linq;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
+﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using MobileAPI.Auth;
 using MobileAPI.Infrastructure;
 using MobileAPI.Services;
-using Microsoft.AspNetCore.Mvc;
+using Swashbuckle.AspNetCore.SwaggerGen;
+using System.Linq;
+using System.Reflection; // <-- for locating XML doc file
+using System.Text;
+using DevEmailSender = MobileAPI.Email.DevEmailSender;
 // alias our email interfaces/impls
 using IAppEmailSender = MobileAPI.Email.IEmailSender;
-using DevEmailSender = MobileAPI.Email.DevEmailSender;
 using SesEmailSender = MobileAPI.Email.SesEmailSender;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -111,12 +113,22 @@ builder.Services.AddCors(options =>
          .AllowCredentials());
 });
 
-// ---------------- App services
+// ---------------- App services (Email)
 var emailProvider = builder.Configuration["Email:Provider"] ?? "Dev";
 if (emailProvider.Equals("SES", StringComparison.OrdinalIgnoreCase))
+{
     builder.Services.AddSingleton<IAppEmailSender, SesEmailSender>();
+}
+else if (emailProvider.Equals("SMTP", StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.Configure<MobileAPI.Email.SmtpOptions>(builder.Configuration.GetSection("Smtp"));
+    builder.Services.AddSingleton<IAppEmailSender, MobileAPI.Email.SmtpEmailSender>();
+}
 else
+{
     builder.Services.AddSingleton<IAppEmailSender, DevEmailSender>();
+}
+
 
 // Hosted services (roles + demo data)
 builder.Services.AddHostedService<RoleSeederHostedService>();
@@ -129,8 +141,26 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc(builder.Configuration["Swagger:Version"] ?? "v1",
-        new OpenApiInfo { Title = builder.Configuration["Swagger:Title"] ?? "MobileAPI", Version = "v1" });
+        new OpenApiInfo
+        {
+            Title = builder.Configuration["Swagger:Title"] ?? "MobileAPI",
+            Version = builder.Configuration["Swagger:Version"] ?? "v1",
+            Description = "Farm Owner/Worker API with JWT auth, role-based access, and consistent envelopes."
+        });
 
+    // Group operations by controller name (clean tags)
+    c.TagActionsBy(api =>
+        new[] { api.GroupName ?? api.ActionDescriptor.RouteValues["controller"] ?? "API" });
+
+    // Include XML comments (controllers + models)
+    var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
+    var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+    if (File.Exists(xmlPath))
+    {
+        c.IncludeXmlComments(xmlPath, includeControllerXmlComments: true);
+    }
+
+    // Security: JWT bearer
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         Description = "Paste the JWT ONLY (no 'Bearer ' prefix).",
@@ -142,15 +172,23 @@ builder.Services.AddSwaggerGen(c =>
     });
     c.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
-        {
-            new OpenApiSecurityScheme
-            {
-                Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" }
-            },
-            Array.Empty<string>()
-        }
+        { new OpenApiSecurityScheme { Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" } }, Array.Empty<string>() }
+    });
+
+    // Conventions
+    c.OperationFilter<StandardResponsesOperationFilter>(); // 200/400/401/403/404/500
+    c.SchemaFilter<ExampleSchemaFilter>();                 // example bodies for common DTOs
+
+    // Keep operation ids stable and readable
+    c.CustomOperationIds(api =>
+    {
+        var ctrl = api.ActionDescriptor.RouteValues["controller"];
+        var method = api.HttpMethod;
+        var name = api.TryGetMethodInfo(out var info) ? info.Name : "Op";
+        return $"{ctrl}_{method}_{name}";
     });
 });
+
 
 builder.Services.Configure<ApiBehaviorOptions>(options =>
 {

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -38,12 +39,14 @@ public class DemoDataSeeder : IHostedService
 
             // Ensure DB & roles
             await db.Database.MigrateAsync(ct);
-
             if (!await roles.RoleExistsAsync("Owner")) await roles.CreateAsync(new IdentityRole<Guid>("Owner"));
             if (!await roles.RoleExistsAsync("Worker")) await roles.CreateAsync(new IdentityRole<Guid>("Worker"));
 
-            // Owner
-            var ownerEmail = "owner@demo.local";
+            // Users
+            const string ownerEmail = "owner@demo.local";
+            const string workerEmail = "worker@demo.local";
+
+            // Owner (create if missing)
             var owner = await users.FindByEmailAsync(ownerEmail);
             if (owner is null)
             {
@@ -57,7 +60,7 @@ public class DemoDataSeeder : IHostedService
                     IsActive = true
                 };
                 var res = await users.CreateAsync(owner, "Passw0rd!");
-                if (!res.Succeeded) throw new Exception("Create owner failed: " + string.Join("; ", res.Errors));
+                if (!res.Succeeded) throw new Exception("Create owner failed: " + string.Join("; ", res.Errors.Select(e => e.Description)));
                 await users.AddToRoleAsync(owner, "Owner");
             }
             else if (!await users.IsInRoleAsync(owner, "Owner"))
@@ -65,15 +68,14 @@ public class DemoDataSeeder : IHostedService
                 await users.AddToRoleAsync(owner, "Owner");
             }
 
-            // Ensure this EF session sets RLS variables for the owner
+            // (Optional) RLS session vars, if you rely on DB policies
             await db.Database.ExecuteSqlRawAsync(
                 "select set_config('app.current_owner', {0}, false);" +
                 "select set_config('app.worker_user_id', {1}, false);" +
                 "select set_config('app.is_worker', 'false', false);",
                 owner.Id.ToString(), owner.Id.ToString());
 
-            // Worker
-            var workerEmail = "worker@demo.local";
+            // Worker (create if missing)
             var worker = await users.FindByEmailAsync(workerEmail);
             if (worker is null)
             {
@@ -88,7 +90,7 @@ public class DemoDataSeeder : IHostedService
                     EmployerOwnerId = owner.Id
                 };
                 var res = await users.CreateAsync(worker, "Passw0rd!");
-                if (!res.Succeeded) throw new Exception("Create worker failed: " + string.Join("; ", res.Errors));
+                if (!res.Succeeded) throw new Exception("Create worker failed: " + string.Join("; ", res.Errors.Select(e => e.Description)));
                 await users.AddToRoleAsync(worker, "Worker");
             }
             else
@@ -105,19 +107,35 @@ public class DemoDataSeeder : IHostedService
             // Helper for UTC dates
             DateTime Utc(int y, int m, int d) => new DateTime(y, m, d, 0, 0, 0, DateTimeKind.Utc);
 
-            // Farms
-            var farmA = await db.Farms.FirstOrDefaultAsync(f => f.OwnerId == owner.Id && f.Name == "Demo Farm A", ct)
-                       ?? db.Farms.Add(new Farm { OwnerId = owner.Id, Name = "Demo Farm A", LocationText = "North Field", AreaHa = 12.5m }).Entity;
+            // ===== Farms (idempotent) =====
+            var farmA = await db.Farms
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(f => f.OwnerId == owner.Id && f.Name == "Demo Farm A", ct);
 
-            var farmB = await db.Farms.FirstOrDefaultAsync(f => f.OwnerId == owner.Id && f.Name == "Demo Farm B", ct)
-                       ?? db.Farms.Add(new Farm { OwnerId = owner.Id, Name = "Demo Farm B", LocationText = "South Field", AreaHa = 8.0m }).Entity;
+            if (farmA is null)
+            {
+                farmA = new Farm { OwnerId = owner.Id, Name = "Demo Farm A", LocationText = "North Field", AreaHa = 12.5m };
+                db.Farms.Add(farmA);
+            }
+
+            var farmB = await db.Farms
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(f => f.OwnerId == owner.Id && f.Name == "Demo Farm B", ct);
+
+            if (farmB is null)
+            {
+                farmB = new Farm { OwnerId = owner.Id, Name = "Demo Farm B", LocationText = "South Field", AreaHa = 8.0m };
+                db.Farms.Add(farmB);
+            }
 
             await db.SaveChangesAsync(ct);
 
-            // Assignment (worker -> farmA)
-            var assign = await db.WorkerFarmAssignments
-                .FirstOrDefaultAsync(a => a.OwnerId == owner.Id && a.WorkerUserId == worker.Id && a.FarmId == farmA.Id, ct);
-            if (assign is null)
+            // ===== Worker assignment (idempotent) =====
+            var assignExists = await db.WorkerFarmAssignments
+                .IgnoreQueryFilters()
+                .AnyAsync(a => a.OwnerId == owner.Id && a.WorkerUserId == worker.Id && a.FarmId == farmA.Id, ct);
+
+            if (!assignExists)
             {
                 db.WorkerFarmAssignments.Add(new WorkerFarmAssignment
                 {
@@ -128,20 +146,28 @@ public class DemoDataSeeder : IHostedService
                 await db.SaveChangesAsync(ct);
             }
 
-            // Equipment
-            if (!await db.Equipment.AnyAsync(e => e.OwnerId == owner.Id, ct))
+            // ===== Equipment (seed only if none for this owner) =====
+            var anyEquipment = await db.Equipment
+                .IgnoreQueryFilters()
+                .AnyAsync(e => e.OwnerId == owner.Id, ct);
+
+            if (!anyEquipment)
             {
                 db.Equipment.AddRange(
                     new Equipment { OwnerId = owner.Id, Name = "Tractor A", Status = EquipmentStatus.Available, FarmId = farmA.Id },
                     new Equipment { OwnerId = owner.Id, Name = "Harvester H1", Status = EquipmentStatus.Maintenance, FarmId = farmA.Id },
                     new Equipment { OwnerId = owner.Id, Name = "Irrigation Pump", Status = EquipmentStatus.InUse, FarmId = farmB.Id },
-                    new Equipment { OwnerId = owner.Id, Name = "Pickup Truck", Status = EquipmentStatus.Available, FarmId = null } // owner-wide
+                    new Equipment { OwnerId = owner.Id, Name = "Pickup Truck", Status = EquipmentStatus.Available, FarmId = null }
                 );
                 await db.SaveChangesAsync(ct);
             }
 
-            // Plantings + Harvest
-            if (!await db.Plantings.AnyAsync(p => p.OwnerId == owner.Id, ct))
+            // ===== Plantings + Harvest (seed only if none for this owner) =====
+            var anyPlantings = await db.Plantings
+                .IgnoreQueryFilters()
+                .AnyAsync(p => p.OwnerId == owner.Id, ct);
+
+            if (!anyPlantings)
             {
                 var p1 = new Planting
                 {
@@ -173,8 +199,12 @@ public class DemoDataSeeder : IHostedService
                 await db.SaveChangesAsync(ct);
             }
 
-            // Tasks (✅ use alias DomainTaskStatus)
-            if (!await db.Tasks.AnyAsync(t => t.OwnerId == owner.Id, ct))
+            // ===== Tasks (seed only if none for this owner) =====
+            var anyTasks = await db.Tasks
+                .IgnoreQueryFilters()
+                .AnyAsync(t => t.OwnerId == owner.Id, ct);
+
+            if (!anyTasks)
             {
                 db.Tasks.AddRange(
                     new TaskItem

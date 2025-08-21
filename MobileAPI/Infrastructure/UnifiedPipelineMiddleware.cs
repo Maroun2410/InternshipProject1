@@ -3,12 +3,14 @@ using System.Reflection;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi.Any;
+using Swashbuckle.AspNetCore.SwaggerGen;
+using Microsoft.AspNetCore.Authorization;
 
 namespace MobileAPI.Infrastructure;
 
-// =====================
-// ✅ Success message attribute (optional per action or controller)
-// =====================
+// Success message attribute (optional per action or controller)
 [AttributeUsage(AttributeTargets.Method | AttributeTargets.Class, AllowMultiple = false, Inherited = true)]
 public sealed class SuccessMessageAttribute : Attribute
 {
@@ -16,9 +18,7 @@ public sealed class SuccessMessageAttribute : Attribute
     public SuccessMessageAttribute(string message) => Message = message;
 }
 
-// =====================
-// ✅ Success envelope filter (wraps 200 OK into { message, data })
-// =====================
+// Success envelope filter (wraps 200 OK into { message, data })
 public sealed class SuccessEnvelopeFilter : IAsyncResultFilter
 {
     public async Task OnResultExecutionAsync(ResultExecutingContext context, ResultExecutionDelegate next)
@@ -132,5 +132,110 @@ public class UnifiedPipelineMiddleware
             });
             await ctx.Response.WriteAsync(json);
         }
+    }
+}
+
+public sealed class StandardResponsesOperationFilter : IOperationFilter
+{
+    public void Apply(OpenApiOperation operation, OperationFilterContext context)
+    {
+        // Always document Problem Details errors
+        AddOrSet(operation, "400", "Bad Request (validation failed)");
+        AddOrSet(operation, "404", "Not Found");
+        AddOrSet(operation, "500", "Server Error");
+
+        var hasAuthorize = context.MethodInfo.GetCustomAttributes(true).OfType<AuthorizeAttribute>().Any()
+                           || context.MethodInfo.DeclaringType?.GetCustomAttributes(true).OfType<AuthorizeAttribute>().Any() == true;
+        var hasAllowAnon = context.MethodInfo.GetCustomAttributes(true).OfType<AllowAnonymousAttribute>().Any()
+                           || context.MethodInfo.DeclaringType?.GetCustomAttributes(true).OfType<AllowAnonymousAttribute>().Any() == true;
+
+        if (hasAuthorize && !hasAllowAnon)
+        {
+            AddOrSet(operation, "401", "Unauthorized");
+            AddOrSet(operation, "403", "Forbidden");
+        }
+
+        // Standard 200 description to reflect your { message, data } envelope
+        if (!operation.Responses.ContainsKey("200"))
+        {
+            operation.Responses["200"] = new OpenApiResponse { Description = "OK (message + data envelope)" };
+        }
+        else
+        {
+            operation.Responses["200"].Description = "OK (message + data envelope)";
+        }
+    }
+
+    private static void AddOrSet(OpenApiOperation op, string code, string desc)
+    {
+        if (op.Responses.ContainsKey(code)) op.Responses[code].Description = desc;
+        else op.Responses[code] = new OpenApiResponse { Description = desc };
+    }
+}
+
+public sealed class ExampleSchemaFilter : ISchemaFilter
+{
+    public void Apply(OpenApiSchema schema, SchemaFilterContext ctx)
+    {
+        var t = ctx.Type;
+
+        // Only add examples to request DTOs you use often (strings keep it simple)
+        schema.Example = t.FullName switch
+        {
+            "MobileAPI.Auth.LoginRequest" => Obj(
+                ("email", "owner@example.com"),
+                ("password", "P@ssw0rd!"),
+                ("device", "Android"),
+                ("userAgent", "MobileApp/1.0 (Pixel 8; Android 14)")
+            ),
+
+            "MobileAPI.Auth.RegisterOwnerRequest" => Obj(
+                ("email", "owner@example.com"),
+                ("password", "P@ssw0rd!"),
+                ("fullName", "Olive Farmer")
+            ),
+
+            "MobileAPI.Auth.RefreshRequest" => Obj(
+                ("refreshToken", "paste-refresh-token-here"),
+                ("device", "Android"),
+                ("userAgent", "MobileApp/1.0 (Pixel 8; Android 14)")
+            ),
+
+            "MobileAPI.Auth.LogoutRequest" => Obj(
+                ("refreshToken", "paste-refresh-token-here")
+            ),
+
+            "MobileAPI.Auth.ForgotPasswordRequest" => Obj(
+                ("email", "owner@example.com")
+            ),
+
+            "MobileAPI.Auth.ResetPasswordRequest" => Obj(
+                ("userId", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+                ("token", "paste-reset-token-here"),
+                ("newPassword", "NewP@ssw0rd!")
+            ),
+
+            "MobileAPI.Workers.InviteWorkerRequest" => Obj(
+                ("email", "worker@example.com"),
+                ("fullName", "Field Worker"),
+                ("expiresDays", "7")
+            ),
+
+            "MobileAPI.Workers.AcceptInviteRequest" => Obj(
+                ("email", "worker@example.com"),
+                ("token", "paste-invite-token-here"),
+                ("password", "P@ssw0rd!"),
+                ("fullName", "Field Worker")
+            ),
+
+            _ => schema.Example // leave unchanged
+        };
+    }
+
+    private static IOpenApiAny Obj(params (string key, string value)[] kvps)
+    {
+        var o = new OpenApiObject();
+        foreach (var (k, v) in kvps) o[k] = new OpenApiString(v);
+        return o;
     }
 }
