@@ -9,31 +9,34 @@ using MobileAPI.Infrastructure;
 using MobileAPI.Services;
 using Swashbuckle.AspNetCore.SwaggerGen;
 using System.Linq;
-using System.Reflection; // <-- for locating XML doc file
+using System.Reflection;
 using System.Text;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
+
 using DevEmailSender = MobileAPI.Email.DevEmailSender;
-// alias our email interfaces/impls
 using IAppEmailSender = MobileAPI.Email.IEmailSender;
 using SesEmailSender = MobileAPI.Email.SesEmailSender;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ---------- Controllers + success envelope
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<SuccessEnvelopeFilter>();
 });
 
-// ---------------- Config
+// ---------- Configuration objects
 builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("Jwt"));
 
-// ---------------- HttpContext + CurrentUser accessor
+// ---------- HttpContext + CurrentUser accessor
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, CurrentUserFromHttpContext>();
 
-// ---------------- RLS session interceptor
+// ---------- RLS session interceptor
 builder.Services.AddScoped<RlsSessionInterceptor>();
 
-// ---------------- DbContext (PostgreSQL) + interceptor
+// ---------- DbContext (PostgreSQL) + interceptor
 builder.Services.AddDbContext<AppDbContext>((sp, opt) =>
 {
     var cs = builder.Configuration.GetConnectionString("DefaultConnection")!;
@@ -41,7 +44,7 @@ builder.Services.AddDbContext<AppDbContext>((sp, opt) =>
     opt.AddInterceptors(sp.GetRequiredService<RlsSessionInterceptor>());
 });
 
-// ---------------- Identity (GUID keys)
+// ---------- Identity (GUID keys)
 builder.Services
     .AddIdentityCore<ApplicationUser>(o =>
     {
@@ -49,22 +52,36 @@ builder.Services
         o.Password.RequireNonAlphanumeric = false;
         o.Password.RequireUppercase = false;
         o.Lockout.MaxFailedAccessAttempts = 5;
-        o.SignIn.RequireConfirmedEmail = true;
+        o.SignIn.RequireConfirmedEmail = true; // required for login
     })
     .AddRoles<IdentityRole<Guid>>()
     .AddEntityFrameworkStores<AppDbContext>()
     .AddSignInManager()
     .AddDefaultTokenProviders();
 
+// Claims factory
 builder.Services.AddScoped<IUserClaimsPrincipalFactory<ApplicationUser>,
     UserClaimsPrincipalFactory<ApplicationUser, IdentityRole<Guid>>>();
 
+// Email confirmation token window
 builder.Services.Configure<DataProtectionTokenProviderOptions>(o =>
 {
     o.TokenLifespan = TimeSpan.FromHours(2);
 });
 
-// ---------------- AuthN: JWT (HS256 for dev)
+// ---------- Data Protection (persist keys so tokens survive restarts)
+builder.Services.AddDataProtection()
+    .PersistKeysToFileSystem(new DirectoryInfo(
+        Path.Combine(builder.Environment.ContentRootPath, "dpkeys")))
+    .SetApplicationName("InternshipProject1MobileAPI");
+
+// ---------- Forwarded headers (for tunnels/reverse proxies)
+builder.Services.Configure<ForwardedHeadersOptions>(o =>
+{
+    o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+});
+
+// ---------- AuthN: JWT (HS256 for dev)
 var jwt = builder.Configuration.GetSection("Jwt").Get<JwtSettings>()!;
 var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.SigningKey));
 
@@ -96,14 +113,14 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
-// ---------------- AuthZ
+// ---------- AuthZ
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("OwnerOnlyWrite", p => p.RequireRole("Owner"));
     options.AddPolicy("OwnerOrWorkerRead", p => p.RequireRole("Owner", "Worker"));
 });
 
-// ---------------- CORS
+// ---------- CORS
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("MobileCors", p =>
@@ -113,7 +130,7 @@ builder.Services.AddCors(options =>
          .AllowCredentials());
 });
 
-// ---------------- App services (Email)
+// ---------- Email services
 var emailProvider = builder.Configuration["Email:Provider"] ?? "Dev";
 if (emailProvider.Equals("SES", StringComparison.OrdinalIgnoreCase))
 {
@@ -129,14 +146,13 @@ else
     builder.Services.AddSingleton<IAppEmailSender, DevEmailSender>();
 }
 
-
-// Hosted services (roles + demo data)
+// ---------- Hosted services (roles + demo data)
 builder.Services.AddHostedService<RoleSeederHostedService>();
-builder.Services.AddHostedService<DemoDataSeeder>(); // <= DEMO DATA ENABLED ON EVERY RUN
+builder.Services.AddHostedService<DemoDataSeeder>(); // DEMO DATA ON EVERY RUN
 
 builder.Services.AddScoped<ITokenService, TokenService>();
 
-// ---------------- MVC + Swagger
+// ---------- Swagger
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -148,19 +164,14 @@ builder.Services.AddSwaggerGen(c =>
             Description = "Farm Owner/Worker API with JWT auth, role-based access, and consistent envelopes."
         });
 
-    // Group operations by controller name (clean tags)
     c.TagActionsBy(api =>
         new[] { api.GroupName ?? api.ActionDescriptor.RouteValues["controller"] ?? "API" });
 
-    // Include XML comments (controllers + models)
     var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
     var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
     if (File.Exists(xmlPath))
-    {
         c.IncludeXmlComments(xmlPath, includeControllerXmlComments: true);
-    }
 
-    // Security: JWT bearer
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         Description = "Paste the JWT ONLY (no 'Bearer ' prefix).",
@@ -175,11 +186,9 @@ builder.Services.AddSwaggerGen(c =>
         { new OpenApiSecurityScheme { Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" } }, Array.Empty<string>() }
     });
 
-    // Conventions
-    c.OperationFilter<StandardResponsesOperationFilter>(); // 200/400/401/403/404/500
-    c.SchemaFilter<ExampleSchemaFilter>();                 // example bodies for common DTOs
+    c.OperationFilter<StandardResponsesOperationFilter>();
+    c.SchemaFilter<ExampleSchemaFilter>();
 
-    // Keep operation ids stable and readable
     c.CustomOperationIds(api =>
     {
         var ctrl = api.ActionDescriptor.RouteValues["controller"];
@@ -189,12 +198,10 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-
 builder.Services.Configure<ApiBehaviorOptions>(options =>
 {
     options.InvalidModelStateResponseFactory = context =>
     {
-        // Flatten validation errors
         var errors = context.ModelState
             .Where(kvp => kvp.Value?.Errors.Count > 0)
             .ToDictionary(
@@ -217,19 +224,23 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
     };
 });
 
-// Cleanup options + hosted service
+// ---------- Cleanup options + hosted service
 builder.Services.Configure<CleanupOptions>(builder.Configuration.GetSection("Cleanup"));
 builder.Services.AddHostedService<BackgroundCleanupHostedService>();
 
-
 var app = builder.Build();
 
+// Forwarded headers must come early
+app.UseForwardedHeaders();
+
+// Swagger (you can enable always if you prefer)
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
+// Your single middleware
 app.UseMiddleware<UnifiedPipelineMiddleware>();
 
 app.UseStatusCodePages(async statusCtx =>

@@ -2,9 +2,11 @@
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.WebUtilities;
 using System.Linq;
 using System.Net;                 // WebUtility.HtmlEncode
 using System.Security.Claims;
+using System.Text;               // Base64Url encode/decode
 using MobileAPI.Workers;         // AcceptInviteRequest from Workers/Dtos.cs
 using IAppEmailSender = MobileAPI.Email.IEmailSender;
 
@@ -40,14 +42,39 @@ public class AuthController : ControllerBase
         _cfg = cfg;
     }
 
-    // Helper: build an absolute URL for confirm/reset using config first, then current request
+    // Builds an absolute API URL from PublicBaseUrl
+    private string BuildApiUrl(string path, string query)
+    {
+        var baseUrl = _cfg["App:PublicBaseUrl"];
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            baseUrl = $"{Request.Scheme}://{Request.Host}";
+        baseUrl = baseUrl.TrimEnd('/');
+
+        var sep = string.IsNullOrEmpty(query) ? "" : (path.Contains('?') ? "&" : "?");
+        return $"{baseUrl}{path}{sep}{query}";
+    }
+
+    // Backward-compatible safe decode: try Base64Url, else use as-is
+    private static string SafeDecodeToken(string input)
+    {
+        try
+        {
+            var bytes = WebEncoders.Base64UrlDecode(input);
+            return Encoding.UTF8.GetString(bytes);
+        }
+        catch
+        {
+            return input; // if someone passed the raw token, still works
+        }
+    }
+
+    // Helper: original BuildUrl kept in case you use it elsewhere
     private string BuildUrl(string? configuredBase, string endpointWhenMissing, string query)
     {
         var baseUrl = !string.IsNullOrWhiteSpace(configuredBase)
             ? configuredBase!.TrimEnd()
             : $"{Request.Scheme}://{Request.Host}{endpointWhenMissing}";
 
-        // if configuredBase already contains ?, append with &, else with ?
         var sep = baseUrl.Contains('?') ? "&" : "?";
         return $"{baseUrl}{sep}{query}";
     }
@@ -75,14 +102,12 @@ public class AuthController : ControllerBase
 
         await _userManager.AddToRoleAsync(user, "Owner");
 
-        // Build confirmation link from config (preferred) or current host
-        var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
-        var confirmBase = _cfg["App:ConfirmEmailUrl"]; // e.g. https://localhost:7106/api/auth/confirm-email (recommended)
-        var confirmUrl = BuildUrl(
-            confirmBase,
-            "/api/auth/confirm-email",
-            $"userId={user.Id}&token={Uri.EscapeDataString(token)}"
-        );
+        // Generate + Base64Url-encode the token
+        var rawToken = await _userManager.GenerateEmailConfirmationTokenAsync(user);
+        var encoded = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(rawToken));
+
+        // Build a DIRECT API link so the act of clicking flips the DB flag
+        var confirmUrl = BuildApiUrl("/api/auth/confirm-email", $"userId={user.Id}&code={encoded}");
 
         await _email.SendAsync(
             user.Email!,
@@ -92,10 +117,9 @@ public class AuthController : ControllerBase
             $"<p><a href=\"{confirmUrl}\">Confirm Email</a></p>"
         );
 
-        // In non-SES mode, return the link and token to ease DEV testing
         var provider = _cfg["Email:Provider"] ?? "Dev";
         if (!provider.Equals("SES", StringComparison.OrdinalIgnoreCase))
-            return Ok(new { message = "Registered (DEV). Use confirmUrl/token.", userId = user.Id, confirmUrl, token });
+            return Ok(new { message = "Registered (DEV). Use confirmUrl/code.", userId = user.Id, confirmUrl, code = encoded });
 
         return Ok(new { message = "Registered. Please check your email to confirm your account." });
     }
@@ -103,15 +127,51 @@ public class AuthController : ControllerBase
     // ----------- Confirm email -----------
     [HttpGet("confirm-email")]
     [AllowAnonymous]
-    public async Task<IActionResult> ConfirmEmail([FromQuery] Guid userId, [FromQuery] string token)
+    public async Task<IActionResult> ConfirmEmail([FromQuery] Guid userId, [FromQuery] string? token, [FromQuery] string? code)
     {
+        if (userId == Guid.Empty) return BadRequest(new { message = "Invalid user id." });
+
         var user = await _userManager.FindByIdAsync(userId.ToString());
         if (user == null) return NotFound(new { message = "User not found" });
+        if (user.EmailConfirmed) return Ok(new { message = "Email already confirmed.", confirmed = true });
 
-        var res = await _userManager.ConfirmEmailAsync(user, token);
-        if (!res.Succeeded) return BadRequest(new { message = "Invalid or expired token", errors = res.Errors });
+        var incoming = !string.IsNullOrWhiteSpace(code) ? code : token;
+        if (string.IsNullOrWhiteSpace(incoming))
+            return BadRequest(new { message = "Missing confirmation code." });
 
-        return Ok(new { message = "Email confirmed." });
+        var decoded = SafeDecodeToken(incoming);
+
+        IdentityResult res;
+        try
+        {
+            res = await _userManager.ConfirmEmailAsync(user, decoded);
+        }
+        catch (DbUpdateException ex)
+        {
+            return StatusCode(500, new
+            {
+                message = "Database update failed while confirming email.",
+                hint = "If you use Postgres RLS/interceptors, ensure AspNetUsers updates are allowed for this anonymous endpoint.",
+                detail = ex.GetBaseException().Message
+            });
+        }
+
+        if (!res.Succeeded)
+            return BadRequest(new
+            {
+                message = "Invalid or expired confirmation code.",
+                errors = res.Errors.Select(e => $"{e.Code}: {e.Description}"),
+                hints = new[]
+                {
+                    "Click the newest email.",
+                    "Ensure DataProtection keys are persisted (dpkeys folder).",
+                    "Default token lifespan ~2h; request a new email if expired."
+                }
+            });
+
+        // Re-fetch to prove the flag flipped
+        var refreshed = await _userManager.FindByIdAsync(userId.ToString());
+        return Ok(new { message = "Email confirmed.", confirmed = refreshed!.EmailConfirmed });
     }
 
     // ----------- Login -----------
@@ -239,28 +299,46 @@ public class AuthController : ControllerBase
     [AllowAnonymous]
     public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest req)
     {
+        // Hide account existence
         var user = await _userManager.FindByEmailAsync(req.Email);
-        if (user == null) return Ok(new { message = "If an account exists, an email has been sent." });
+        if (user == null)
+            return Ok(new { message = "If an account exists, an email has been sent." });
 
-        var token = await _userManager.GeneratePasswordResetTokenAsync(user);
+        var raw = await _userManager.GeneratePasswordResetTokenAsync(user);
+        var encoded = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(raw));
+        var encCode = WebUtility.UrlEncode(encoded);
 
-        var resetBase = _cfg["App:ResetPasswordUrl"]; // e.g. https://localhost:7106/api/auth/reset-password
-        var resetUrl = BuildUrl(
-            resetBase,
-            "/api/auth/reset-password",
-            $"userId={user.Id}&token={Uri.EscapeDataString(token)}"
-        );
+        // If ResetPasswordUrl is mistakenly set to the API POST endpoint, override to verify-reset.
+        var uiResetBase = _cfg["App:ResetPasswordUrl"];
+        var looksLikeApiResetPost = uiResetBase?.Contains("/api/auth/reset-password", StringComparison.OrdinalIgnoreCase) == true;
+
+        var url = (!string.IsNullOrWhiteSpace(uiResetBase) && !looksLikeApiResetPost)
+            ? $"{uiResetBase!.TrimEnd('/')}?userId={user.Id}&code={encCode}"
+            : BuildApiUrl("/api/auth/verify-reset", $"userId={user.Id}&code={encCode}");
 
         await _email.SendAsync(
             user.Email!, "Reset your password",
             $"<p>Hello {WebUtility.HtmlEncode(user.FullName ?? user.Email)},</p>" +
             $"<p>Reset your password by clicking the link below:</p>" +
-            $"<p><a href=\"{resetUrl}\">Reset Password</a></p>");
+            $"<p><a href=\"{url}\">Reset Password</a></p>");
 
         return Ok(new { message = "If an account exists, an email has been sent." });
     }
 
-    // ----------- Reset password -----------
+    // Add a GET on /api/auth/reset-password that redirects to verify-reset (catches old emails)
+    [HttpGet("reset-password")]
+    [AllowAnonymous]
+    public IActionResult ResetPasswordGet([FromQuery] Guid userId, [FromQuery] string code)
+    {
+        if (userId == Guid.Empty || string.IsNullOrWhiteSpace(code))
+            return BadRequest(new { message = "Missing parameters." });
+
+        var enc = WebUtility.UrlEncode(code);
+        var url = BuildApiUrl("/api/auth/verify-reset", $"userId={userId}&code={enc}");
+        return Redirect(url);
+    }
+
+    // ----------- Reset password (POST) -----------
     [HttpPost("reset-password")]
     [AllowAnonymous]
     public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest req)
@@ -268,7 +346,10 @@ public class AuthController : ControllerBase
         var user = await _userManager.FindByIdAsync(req.UserId.ToString());
         if (user == null) return BadRequest(new { message = "Invalid user" });
 
-        var res = await _userManager.ResetPasswordAsync(user, req.Token, req.NewPassword);
+        // Accept either raw or Base64Url-encoded token
+        var decoded = SafeDecodeToken(req.Token);
+
+        var res = await _userManager.ResetPasswordAsync(user, decoded, req.NewPassword);
         if (!res.Succeeded) return BadRequest(new { message = "Invalid or expired token", errors = res.Errors });
 
         // Revoke all active refresh tokens
@@ -373,5 +454,41 @@ public class AuthController : ControllerBase
         await _db.SaveChangesAsync();
 
         return Ok(new { message = "Invite accepted. You can now log in as a worker." });
+    }
+
+    // ----------- Verify reset token (GET from email when no UI) -----------
+    [HttpGet("verify-reset")]
+    [AllowAnonymous]
+    public async Task<IActionResult> VerifyReset([FromQuery] Guid userId, [FromQuery] string code)
+    {
+        if (userId == Guid.Empty || string.IsNullOrWhiteSpace(code))
+            return BadRequest(new { message = "Missing parameters." });
+
+        var user = await _userManager.FindByIdAsync(userId.ToString());
+        if (user == null) return NotFound(new { message = "User not found." });
+
+        var decoded = SafeDecodeToken(code); // uses your helper
+
+        var provider = _userManager.Options.Tokens.PasswordResetTokenProvider;
+        var ok = await _userManager.VerifyUserTokenAsync(user, provider, "ResetPassword", decoded);
+        if (!ok)
+            return BadRequest(new
+            {
+                message = "Invalid or expired reset token.",
+                hints = new[]
+                {
+                    "Request a new reset email.",
+                    "Ensure server DataProtection keys are persisted.",
+                    "Default token lifetime is ~2 hours."
+                }
+            });
+
+        return Ok(new
+        {
+            message = "Token valid.",
+            userId,
+            // The UI should POST this 'code' back to /api/auth/reset-password with the new password
+            code
+        });
     }
 }
